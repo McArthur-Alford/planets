@@ -1,0 +1,8 @@
+[package]
+name = "planets"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.15.1"
+bevy_panorbit_camera = "0.22.0"
