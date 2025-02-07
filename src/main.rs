@@ -21,7 +21,10 @@ use goldberg::setup_hex;
 fn setup(mut commands: Commands) {
     commands.spawn((
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        PanOrbitCamera::default(),
+        PanOrbitCamera {
+            radius: Some(80.0),
+            ..Default::default()
+        },
     ));
 
     commands.spawn(DirectionalLight {
@@ -52,7 +55,8 @@ fn main() {
             default_color: GREEN.into(),
         })
         .add_systems(Startup, (setup, setup_hex))
-        .add_systems(Update, (spin_light, toggle_wireframe))
+        .add_systems(Update, toggle_wireframe)
+        // .add_systems(Update, spin_light)
         .run();
 }
 

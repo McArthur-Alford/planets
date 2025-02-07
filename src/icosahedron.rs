@@ -5,6 +5,7 @@ use bevy::pbr::wireframe::Wireframe;
 use bevy::prelude::*;
 use bevy::render::mesh::Indices;
 use bevy::render::mesh::PrimitiveTopology::TriangleList;
+use rand::random_range;
 use std::collections::BTreeMap;
 
 pub(crate) struct Icosahedron {
@@ -116,6 +117,14 @@ impl Icosahedron {
             vertex[0] /= len;
             vertex[1] /= len;
             vertex[2] /= len;
+        }
+    }
+
+    pub(crate) fn jitter(&mut self, range: f32) {
+        for vertex in self.vertices.iter_mut() {
+            vertex[0] += random_range(0.0..=range);
+            vertex[1] += random_range(0.0..=range);
+            vertex[2] += random_range(0.0..=range);
         }
     }
 }

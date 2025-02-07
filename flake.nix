@@ -60,6 +60,7 @@
               rust-analyzer
               rustPackages.clippy
               rustup
+              cargo-flamegraph
             ]
             ++ runtimeDeps;
         };

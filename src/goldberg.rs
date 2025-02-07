@@ -10,12 +10,14 @@ use bevy::pbr::OpaqueRendererMethod;
 use bevy::prelude::*;
 use bevy::render::mesh::Indices;
 use bevy::render::mesh::PrimitiveTopology::TriangleList;
+use rand::random_range;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 pub(crate) struct GoldbergPoly {
     /// Hex (plus penta) positions
     /// These are the icosahedron vertices
+    /// They also conveniently work as normals for the faces
     pub(crate) hexes: Vec<[f32; 3]>,
 
     /// Adjacency list of hex (plus penta) indices
@@ -27,10 +29,14 @@ pub(crate) struct GoldbergPoly {
 
     /// Faces of the mesh
     pub(crate) faces: Vec<[u32; 3]>,
+
+    // Mapping of face (by index into faces) to
+    // the associated hex (as an index into hexes)
+    pub(crate) face_to_hex: Vec<u32>,
 }
 
-impl GoldbergPoly {
-    pub(crate) fn new(icosahedron: Icosahedron) -> Self {
+impl From<Icosahedron> for GoldbergPoly {
+    fn from(icosahedron: Icosahedron) -> Self {
         let Icosahedron {
             vertices: ico_vertices,
             faces: ico_faces,
@@ -42,6 +48,9 @@ impl GoldbergPoly {
         let mut gold_vertices = Vec::<[f32; 3]>::new();
         // goldberg faces for the new goldberg polyhedron
         let mut gold_faces = Vec::<[u32; 3]>::new();
+
+        // map of faces to their hexagons
+        let mut face_to_hex = Vec::new();
 
         // For each vertex, find all outgoing vertices
         // produce an adjacency matrix for easier lookup
@@ -103,7 +112,8 @@ impl GoldbergPoly {
             // Triangulate that and slap the edges into the goldberg faces
             let o = gold_indices[0];
             for d in gold_indices[1..].windows(2) {
-                gold_faces.push([o, d[0], d[1]])
+                gold_faces.push([o, d[0], d[1]]);
+                face_to_hex.push(ci as u32);
             }
         }
 
@@ -128,7 +138,51 @@ impl GoldbergPoly {
             adjacency,
             vertices: gold_vertices,
             faces: gold_faces,
+            face_to_hex,
         }
+    }
+}
+
+impl GoldbergPoly {
+    pub(crate) fn new(divisions: usize) -> Self {
+        let mut ico = Icosahedron::new();
+        for _ in 0..divisions {
+            ico.subdivide();
+            ico.slerp();
+        }
+        let mut gold = GoldbergPoly::from(ico);
+        gold.slerp();
+
+        gold
+    }
+
+    pub(crate) fn separate_shared_vertices(&mut self) {
+        // Take old vertices/faces out
+        let old_vertices = std::mem::take(&mut self.vertices);
+        let old_faces = std::mem::take(&mut self.faces);
+
+        let mut new_vertices = Vec::with_capacity(old_faces.len() * 3);
+        let mut new_faces = Vec::with_capacity(old_faces.len());
+
+        // For each face, duplicate its 3 vertices so that no face shares them.
+        for [i0, i1, i2] in old_faces {
+            let v0 = old_vertices[i0 as usize];
+            let v1 = old_vertices[i1 as usize];
+            let v2 = old_vertices[i2 as usize];
+
+            // Record the starting index of the new face's vertices
+            let start_index = new_vertices.len() as u32;
+            new_vertices.push(v0);
+            new_vertices.push(v1);
+            new_vertices.push(v2);
+
+            // Update face indices to the newly pushed vertices
+            new_faces.push([start_index, start_index + 1, start_index + 2]);
+        }
+
+        // Put new data back in
+        self.vertices = new_vertices;
+        self.faces = new_faces;
     }
 
     pub(crate) fn slerp(&mut self) {
@@ -146,39 +200,91 @@ impl GoldbergPoly {
 pub(crate) fn setup_hex(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
 ) {
-    let mut ico = Icosahedron::new();
-    for _ in 0..8 {
-        ico.subdivide();
-        ico.slerp();
-    }
-
-    let mut gold = GoldbergPoly::new(ico);
-    gold.slerp();
+    let mut gold = GoldbergPoly::new(5);
+    gold.separate_shared_vertices();
 
     let GoldbergPoly {
-        hexes: _,
-        adjacency: _,
+        hexes,
         vertices,
         faces,
+        face_to_hex,
+        ..
     } = gold;
+
+    // Quickly generate enough unique colours for each face:
+    let dark = [0.57, 0.43, 0.20, 1.0];
+    let bright = [0.98, 0.95, 0.59, 1.0];
+
+    // let dark = [1.0, 0.0, 0.0, 1.0];
+    // let bright = [0.0, 1.0, 0.0, 1.0];
+
+    // let dark = [1.0, 0.0, 1.0, 1.0];
+    // let bright = [0.0, 1.0, 1.0, 1.0];
+
+    let mut face_colors = Vec::<[f32; 4]>::new();
+    for &h in &face_to_hex {
+        let t = random_range(0.0..=1.0);
+
+        // let hex = hexes[h as usize];
+        // let t = (noisy_bevy::simplex_noise_3d(Vec3::from(hex)) + 1.0) / 2.0;
+
+        // Linear interpolation for each channel:
+        let mut r = dark[0] + t * (bright[0] - dark[0]);
+        let mut g = dark[1] + t * (bright[1] - dark[1]);
+        let mut b = dark[2] + t * (bright[2] - dark[2]);
+        let a = 1.0; // Keep alpha at 1.0
+
+        // if t < 0.4 {
+        //     r = 0.0;
+        //     g = 0.0;
+        //     b = 1.0;
+        // } else if t < 0.8 {
+        //     r = 0.0;
+        //     g = 0.5;
+        //     b = 0.0;
+        // } else {
+        //     r = 0.9;
+        //     g = 0.9;
+        //     b = 0.91;
+        // }
+
+        face_colors.push([r, g, b, a]);
+    }
+
+    let mut vertex_colors = vec![[0., 0., 0., 0.]; vertices.len()];
+    for (f, [i, j, k]) in faces.iter().enumerate() {
+        // We have a face with vertices i, j, k, for the hex at face_to_hex[f]
+        vertex_colors[*i as usize] = face_colors[f];
+        vertex_colors[*j as usize] = face_colors[f];
+        vertex_colors[*k as usize] = face_colors[f];
+    }
 
     let mesh = Mesh::new(
         TriangleList,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     )
     .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vertices)
-    .with_inserted_indices(Indices::U32(faces.into_flattened()));
+    .with_inserted_indices(Indices::U32(faces.into_flattened()))
+    .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vertex_colors)
+    .with_inserted_attribute(
+        Mesh::ATTRIBUTE_NORMAL,
+        face_to_hex
+            .iter()
+            .map(|&h| [hexes[h as usize]; 3])
+            .flatten()
+            .collect::<Vec<_>>(),
+    );
 
     commands.spawn((
         Wireframeable,
         Wireframe,
         Mesh3d(meshes.add(mesh.clone())),
         Transform::from_xyz(0., 0., 0.).with_scale(Vec3::new(16.0, 16.0, 16.0)),
-        MeshMaterial3d(materials.add(ExtendedMaterial {
+        MeshMaterial3d(flat_materials.add(ExtendedMaterial {
             base: StandardMaterial {
-                base_color: Color::srgb_u8(0, 0, 255),
                 // double_sided: true,
                 // cull_mode: None,
                 opaque_render_method: OpaqueRendererMethod::Auto,
@@ -186,5 +292,9 @@ pub(crate) fn setup_hex(
             },
             extension: FlatNormalMaterial {},
         })),
+        // MeshMaterial3d(materials.add(StandardMaterial {
+        //     base_color: Color::srgb_u8(0, 0, 255),
+        //     ..Default::default()
+        // })),
     ));
 }

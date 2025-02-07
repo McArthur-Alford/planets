@@ -9,11 +9,17 @@ use bevy::{
 };
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-pub(crate) struct FlatNormalMaterial {}
+pub(crate) struct FlatNormalMaterial {
+    // #[uniform(100)]
+}
 
 // https://github.com/bevyengine/bevy/blob/v0.14.2/examples/shader/extended_material.rs
 impl MaterialExtension for FlatNormalMaterial {
     fn fragment_shader() -> ShaderRef {
+        "flat_normal_material.wgsl".into()
+    }
+
+    fn vertex_shader() -> ShaderRef {
         "flat_normal_material.wgsl".into()
     }
 }
