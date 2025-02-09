@@ -1,9 +1,11 @@
+mod colors;
 mod fibonacci_sphere;
 mod fibonacci_sphere_visualiser;
 mod flatnormal;
 mod goldberg;
 mod helpers;
 mod icosahedron;
+mod surface;
 
 use bevy::{
     color::palettes::css::GREEN,
@@ -13,10 +15,15 @@ use bevy::{
         settings::{RenderCreation, WgpuFeatures, WgpuSettings},
         RenderPlugin,
     },
+    time::common_conditions::on_timer,
 };
+use bevy_fps_counter::FpsCounterPlugin;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
+use colors::randomize_colors;
 use flatnormal::FlatNormalMaterialPlugin;
 use goldberg::setup_hex;
+use std::time::Duration;
+use surface::chunk_to_mesh;
 
 fn setup(mut commands: Commands) {
     commands.spawn((
@@ -34,7 +41,7 @@ fn setup(mut commands: Commands) {
 
 fn spin_light(mut query: Query<(&mut Transform, &DirectionalLight)>) {
     for (mut t, d) in query.iter_mut() {
-        t.rotate_x(std::f32::consts::PI / (60. * 10.));
+        t.rotate_x(std::f32::consts::PI / (60. * 80.));
         t.rotate_y(std::f32::consts::PI / (60. * 20.));
     }
 }
@@ -50,13 +57,22 @@ fn main() {
         }))
         .add_plugins(FlatNormalMaterialPlugin)
         .add_plugins((PanOrbitCameraPlugin, WireframePlugin))
+        .add_plugins(FpsCounterPlugin)
         .insert_resource(WireframeConfig {
             global: false,
             default_color: GREEN.into(),
         })
         .add_systems(Startup, (setup, setup_hex))
-        .add_systems(Update, toggle_wireframe)
-        // .add_systems(Update, spin_light)
+        .add_systems(FixedUpdate, toggle_wireframe)
+        .add_systems(FixedUpdate, chunk_to_mesh)
+        // .add_systems(
+        //     Update,
+        //     (
+        //         update_mesh_colors,
+        //         randomize_colors.run_if(on_timer(Duration::from_millis(50))),
+        //     ),
+        // )
+        .add_systems(FixedUpdate, spin_light)
         .run();
 }
 
