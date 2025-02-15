@@ -1,11 +1,12 @@
-mod colors;
+// mod colors;
 mod fibonacci_sphere;
 mod fibonacci_sphere_visualiser;
 mod flatnormal;
-mod goldberg;
+mod geometry_data;
+// mod goldberg;
 mod helpers;
-mod icosahedron;
-mod surface;
+// mod icosahedron;
+// mod surface;
 
 use bevy::{
     color::palettes::css::GREEN,
@@ -19,17 +20,18 @@ use bevy::{
 };
 use bevy_fps_counter::FpsCounterPlugin;
 use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
-use colors::randomize_colors;
+// use colors::{randomize_colors, update_mesh_colors};
 use flatnormal::FlatNormalMaterialPlugin;
-use goldberg::setup_hex;
+use geometry_data::setup_demo_sphere;
+// use goldberg::setup_hex;
 use std::time::Duration;
-use surface::chunk_to_mesh;
+// use surface::{chunk_to_mesh, orderless_chunker};
 
 fn setup(mut commands: Commands) {
     commands.spawn((
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
         PanOrbitCamera {
-            radius: Some(80.0),
+            radius: Some(60.0),
             ..Default::default()
         },
     ));
@@ -62,9 +64,15 @@ fn main() {
             global: false,
             default_color: GREEN.into(),
         })
-        .add_systems(Startup, (setup, setup_hex))
-        .add_systems(FixedUpdate, toggle_wireframe)
-        .add_systems(FixedUpdate, chunk_to_mesh)
+        .add_systems(Startup, (setup, setup_demo_sphere))
+        .add_systems(Update, toggle_wireframe)
+        // .add_systems(
+        //     FixedUpdate,
+        //     (
+        //         chunk_to_mesh,
+        //         orderless_chunker.run_if(on_timer(Duration::from_millis(10))),
+        //     ),
+        // )
         // .add_systems(
         //     Update,
         //     (

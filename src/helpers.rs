@@ -1,12 +1,14 @@
 use std::collections::BTreeSet;
 
-pub(crate) fn ordered_3tuple((u, v, w): (u32, u32, u32)) -> (u32, u32, u32) {
+use bevy::math::Vec3;
+
+pub(crate) fn ordered_3tuple<T: Ord + Copy>((u, v, w): (T, T, T)) -> (T, T, T) {
     let mut arr = [u, v, w];
     arr.sort();
     (arr[0], arr[1], arr[2])
 }
 
-pub(crate) fn ordered_2tuple(u: u32, v: u32) -> (u32, u32) {
+pub(crate) fn ordered_2tuple<T: Ord + Copy>(u: T, v: T) -> (T, T) {
     if u > v {
         (u, v)
     } else {
@@ -20,7 +22,7 @@ pub(crate) fn ordered_2tuple(u: u32, v: u32) -> (u32, u32) {
 ///
 /// Returns the values in indices, sorted such that the corresponding points in vertices
 /// are ordered in a clockwise fashion when viewed looking onto the sphere from the outside.
-pub(crate) fn sort_poly_vertices(vertices: &Vec<[f32; 3]>, indices: Vec<u32>) -> Vec<u32> {
+pub(crate) fn sort_poly_vertices(vertices: &Vec<Vec3>, indices: Vec<usize>) -> Vec<usize> {
     let mut u = indices[0];
     let mut seen = BTreeSet::from([u]);
     let mut sorted = vec![u];
@@ -43,7 +45,7 @@ pub(crate) fn sort_poly_vertices(vertices: &Vec<[f32; 3]>, indices: Vec<u32>) ->
             let a = vertices[u as usize];
             let b = vertices[v as usize];
 
-            let distance = (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
+            let distance = (a - b).length_squared();
 
             if distance < max_distance && !seen.contains(&v) {
                 max_distance = distance;

@@ -1,21 +1,12 @@
-use super::Wireframeable;
 use crate::colors::HexColors;
-use crate::flatnormal::FlatNormalMaterial;
 use crate::helpers::ordered_3tuple;
 use crate::helpers::sort_poly_vertices;
 use crate::icosahedron::Icosahedron;
-use crate::surface;
 use crate::surface::Cell;
 use crate::surface::Chunk;
 use crate::surface::ChunkSizeLimit;
 use crate::surface::Surface;
-use bevy::asset::RenderAssetUsages;
-use bevy::pbr::wireframe::Wireframe;
-use bevy::pbr::ExtendedMaterial;
-use bevy::pbr::OpaqueRendererMethod;
 use bevy::prelude::*;
-use bevy::render::mesh::Indices;
-use bevy::render::mesh::PrimitiveTopology::TriangleList;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -101,7 +92,7 @@ impl From<Icosahedron> for GoldbergPoly {
                     (c[2] + a1[2] + a2[2]) / 3.0,
                 ];
                 splits.push(avg);
-                triangles.push((ci as u32, ai_1, ai_2))
+                triangles.push((ci as u32, ai_1 as u32, ai_2 as u32))
             }
 
             // Iterate over the splits/triangles
@@ -162,7 +153,9 @@ impl GoldbergPoly {
         for _ in 0..divisions {
             ico.subdivide();
         }
+        println!("Done making ico");
         let mut gold = GoldbergPoly::from(ico);
+        println!("Done making goldberg");
         gold.slerp();
 
         gold
@@ -215,35 +208,43 @@ impl Into<Surface> for GoldbergPoly {
             .hexes
             .iter()
             .zip(self.adjacency)
-            .map(|(hex, adj)| Cell {
-                position: Vec3::from_slice(hex),
-                adjacent: adj.iter().map(|&adj| adj as usize).collect(),
+            .enumerate()
+            .map(|(i, (hex, adj))| {
+                let mut counter = 0;
+                let mut map = BTreeMap::new();
+                Cell {
+                    position: Vec3::from_slice(hex),
+                    adjacent: adj.iter().map(|&adj| adj as usize).collect(),
+                    faces: self.hex_to_face[i]
+                        .iter()
+                        .map(|&f| {
+                            self.faces[f as usize]
+                                .iter()
+                                .map(|vi| {
+                                    *map.entry(vi).or_insert_with(|| {
+                                        counter += 1;
+                                        (counter - 1) as usize
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                                .try_into()
+                                .unwrap()
+                        })
+                        .collect(),
+                    vertices: map
+                        .keys()
+                        .map(|i| Vec3::from_array(self.vertices[**i as usize]))
+                        .collect(),
+                }
             })
             .collect::<Vec<_>>();
 
-        // Start out with a single chunk, it can get split later
+        // Nice and easy single chunk
         let chunks = vec![Chunk {
-            faces: self
-                .faces
-                .iter()
-                .map(|&[a, b, c]| [a as usize, b as usize, c as usize])
-                .collect(),
-            vertices: self
-                .vertices
-                .iter()
-                .map(|&[a, b, c]| Vec3::new(a, b, c))
-                .collect(),
-            cell_to_face: self
-                .hex_to_face
-                .iter()
-                .enumerate()
-                .map(|(c, f)| (c, f.iter().map(|&f| f as usize).collect()))
-                .collect(),
-            face_to_cell: self.face_to_hex.iter().map(|&f| f as usize).collect(),
+            cells: (0..self.hexes.len()).collect(),
+            cell_to_local: (0..self.hexes.len()).map(|i| (i, 0)).collect(),
             mesh: None,
         }];
-
-        // They can all just map to 0 for now :)
         let cell_to_chunk = vec![0; cells.len()];
 
         Surface {
@@ -255,13 +256,18 @@ impl Into<Surface> for GoldbergPoly {
 }
 
 pub(crate) fn setup_hex(mut commands: Commands) {
-    let mut gold = GoldbergPoly::new(4);
+    let mut gold = GoldbergPoly::new(8);
     gold.separate_shared_vertices();
     let surface: Surface = gold.into();
 
     commands.spawn((
+        HexColors {
+            colors: vec![Color::srgba(0.0, 0.0, 0.0, 1.0); surface.cells.len()],
+            changed: Vec::new(),
+        },
         surface,
         Transform::IDENTITY.with_scale(Vec3::new(16.0, 16.0, 16.0)),
-        ChunkSizeLimit(50),
+        ChunkSizeLimit(6000),
+        InheritedVisibility::VISIBLE,
     ));
 }

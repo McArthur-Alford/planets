@@ -1,10 +1,16 @@
+use std::collections::BTreeMap;
+
 use bevy::{
     pbr::ExtendedMaterial, prelude::*, render::mesh::VertexAttributeValues,
     utils::tracing::instrument::WithSubscriber,
 };
 use rand::{random_range, seq::index};
 
-use crate::{flatnormal::FlatNormalMaterial, goldberg::GoldbergPoly, surface::Surface};
+use crate::{
+    flatnormal::FlatNormalMaterial,
+    goldberg::GoldbergPoly,
+    surface::{ChunkSizeLimit, Surface},
+};
 
 /// Represents a planets hex colours
 #[derive(Component, Default)]
@@ -61,44 +67,63 @@ pub(crate) fn randomize_colors(mut hexes: Query<(&mut HexColors)>) {
     }
 }
 
-// pub(crate) fn update_mesh_colors(
-//     mut commands: Commands,
-//     // mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
-//     mut meshes: ResMut<Assets<Mesh>>,
-//     mut hexes: Query<(&Mesh3d, &mut HexColors, &Surface)>,
-// ) {
-//     for (mesh_handle, mut hex_colors, surface) in hexes.iter_mut() {
-//         if hex_colors.changed.len() <= 500 {
-//             // We only do the update if enough meshes are changed,
-//             // to avoid updates as much as possible
-//             continue;
-//         }
+pub(crate) fn update_mesh_colors(
+    mut commands: Commands,
+    // mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut hexes: Query<(&mut HexColors, &Surface, &ChunkSizeLimit)>,
+    mut mesh_handles: Query<&Mesh3d>,
+) {
+    // for (mut hex_colors, surface, limit) in hexes.iter_mut() {
+    //     if hex_colors.changed.len() <= 500 {
+    //         // We only do the update if enough meshes are changed,
+    //         // to avoid updates as much as possible
+    //         continue;
+    //     }
 
-//         let Some(mesh) = meshes.get_mut(mesh_handle) else {
-//             continue;
-//         };
+    //     let mut chunks = BTreeMap::<usize, Vec<usize>>::new();
+    //     for changed in &hex_colors.changed {
+    //         chunks
+    //             .entry(surface.cell_to_chunk[*changed])
+    //             .or_insert_with(Vec::new)
+    //             .push(*changed);
+    //     }
 
-//         let colors = mesh
-//             .attribute_mut(Mesh::ATTRIBUTE_COLOR)
-//             .expect("Mesh should have colors attribute");
+    //     for (chunk, cells) in chunks {
+    //         if cells.len() < limit.0 / 4 {
+    //             // Skip if its < a quarter of the chunk to save performance
+    //             continue;
+    //         }
 
-//         let VertexAttributeValues::Float32x4(colors) = colors else {
-//             continue;
-//         };
+    //         let Some(mesh_handle) = surface.chunks[chunk].mesh else {
+    //             continue;
+    //         };
 
-//         while let Some(h) = hex_colors.changed.pop() {
-//             let c = hex_colors.colors[h];
+    //         let mesh_handle = mesh_handles.get(mesh_handle).unwrap();
+    //         let mesh = meshes.get_mut(mesh_handle).unwrap();
 
-//             // Update hex h to have color c
-//             // AKA update all vertices of hex h to have color c
-//             // AKA find the indices of all vertices
-//             // faces[hex_to_face[h]][0..3]
-//             for &f in &gold.hex_to_face[h] {
-//                 for &v in &gold.faces[f as usize] {
-//                     colors[v as usize] = c.to_linear().to_f32_array();
-//                 }
-//             }
-//         }
-//         // mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, values);
-//     }
-// }
+    //         let colors = mesh
+    //             .attribute_mut(Mesh::ATTRIBUTE_COLOR)
+    //             .expect("Mesh should have colors attribute");
+
+    //         let VertexAttributeValues::Float32x4(colors) = colors else {
+    //             continue;
+    //         };
+
+    //         // while let Some(h) = hex_colors.changed.pop() {
+    //         //     let c = hex_colors.colors[h];
+
+    //         //     // Update hex h to have color c
+    //         //     // AKA update all vertices of hex h to have color c
+    //         //     // AKA find the indices of all vertices
+    //         //     // faces[hex_to_face[h]][0..3]
+    //         //     for &f in &gold.hex_to_face[h] {
+    //         //         for &v in &gold.faces[f as usize] {
+    //         //             colors[v as usize] = c.to_linear().to_f32_array();
+    //         //         }
+    //         //     }
+    //         // }
+    //         // mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, values);
+    //     }
+    // }
+}

@@ -9,7 +9,8 @@ use bevy::{
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology::TriangleList},
 };
-use std::collections::{BTreeMap, BTreeSet};
+use rand::{random, random_range};
+use std::collections::{vec_deque, BTreeMap, BTreeSet, VecDeque};
 
 use crate::{flatnormal::FlatNormalMaterial, Wireframeable};
 
@@ -18,65 +19,119 @@ use crate::{flatnormal::FlatNormalMaterial, Wireframeable};
 #[derive(Component)]
 pub(crate) struct ChunkSizeLimit(pub usize);
 
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub(crate) struct Surface {
     pub(crate) cells: Vec<Cell>,
     pub(crate) chunks: Vec<Chunk>,
     pub(crate) cell_to_chunk: Vec<usize>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct Chunk {
-    pub(crate) faces: Vec<[usize; 3]>,
-    pub(crate) vertices: Vec<Vec3>,
-    pub(crate) cell_to_face: BTreeMap<usize, Vec<usize>>,
-    pub(crate) face_to_cell: Vec<usize>,
+    pub(crate) cells: Vec<usize>,
+    /// Quick reverse lookup for getting indexes of  entries in cells ^^
+    pub(crate) cell_to_local: BTreeMap<usize, usize>,
     pub(crate) mesh: Option<Entity>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct Cell {
     pub(crate) position: Vec3,
     pub(crate) adjacent: BTreeSet<usize>,
+    pub(crate) faces: Vec<[usize; 3]>,
+    pub(crate) vertices: Vec<Vec3>,
 }
 
 /// Looks for surfaces with chunks that are too big and
 /// starts splitting them up using voronoi-style chunks
-pub(crate) fn chunker(mut surfaces: Query<(&ChunkSizeLimit, &mut Surface)>) {
+pub(crate) fn neighbour_chunker(mut surfaces: Query<(&ChunkSizeLimit, &mut Surface)>) {
     for (limit, mut surface) in surfaces.iter_mut() {
-        for chunk in surface.chunks.iter() {
-            if chunk.cell_to_face.len() <= limit.0 {
+        let mut splits = Vec::new();
+        let Surface {
+            cells,
+            chunks,
+            cell_to_chunk,
+        } = surface.into_inner();
+
+        let mut counter = 0;
+        let chunks_len = chunks.len();
+        for (i, chunk) in chunks.iter_mut().enumerate() {
+            if chunk.mesh.is_some() || (chunk.cells.len() < limit.0) {
+                continue;
+            }
+            counter += 1;
+
+            let mut frontier = VecDeque::from([chunk.cells[random_range(0..chunk.cells.len())]]);
+            let mut seen = BTreeSet::new();
+
+            while seen.len() < limit.0 {
+                let Some(front) = frontier.pop_front() else {
+                    break;
+                };
+                if seen.contains(&front) {
+                    continue;
+                }
+                if cell_to_chunk[front] != i {
+                    continue;
+                }
+
+                seen.insert(front);
+
+                cell_to_chunk[front] = chunks_len + splits.len();
+
+                for adj in &cells[front].adjacent {
+                    frontier.push_back(*adj);
+                }
+            }
+
+            chunk.cell_to_local.retain(|c, l| !seen.contains(c));
+            chunk.cells.retain(|c| !seen.contains(c));
+
+            splits.push(Chunk {
+                cells: seen.iter().cloned().collect(),
+                cell_to_local: seen.into_iter().enumerate().map(|(i, c)| (c, i)).collect(),
+                mesh: None,
+            })
+        }
+
+        chunks.extend(splits);
+    }
+}
+
+pub(crate) fn orderless_chunker(mut surfaces: Query<(&ChunkSizeLimit, &mut Surface)>) {
+    for (limit, mut surface) in surfaces.iter_mut() {
+        let mut splits = Vec::new();
+        let Surface {
+            cells,
+            chunks,
+            cell_to_chunk,
+        } = surface.into_inner();
+
+        let len = chunks.len();
+        for chunk in &mut *chunks {
+            if chunk.mesh.is_some() || (limit.0 > chunk.cells.len()) {
                 continue;
             }
 
-            let mut new_chunk = Chunk {
-                cell_to_face: chunk
-                    .cell_to_face
-                    .clone()
+            // Here we can chunk it!
+            chunk.cell_to_local.retain(|c, l| *l >= limit.0);
+            let new_cells = chunk.cells.split_off(limit.0);
+            splits.push(Chunk {
+                cells: new_cells.clone(),
+                cell_to_local: new_cells
                     .into_iter()
-                    .skip(limit.0)
+                    .enumerate()
+                    .map(|(i, c)| (c, i))
                     .collect(),
-                ..Default::default()
-            };
-            new_chunk.face_to_cell = new_chunk
-                .cell_to_face
-                .iter()
-                .flat_map(|(cell, faces)| faces.iter().map(|face| chunk.face_to_cell[*face]))
-                .skip(limit.0)
-                .collect();
+                mesh: None,
+            });
 
-            for face in limit.0..chunk.cell_to_face.len() {
-                let face = chunk.faces[face];
-                // Move this face and its vertices into the new chunk
-                // We want to move these cells, their faces and vertices into
-                // a new chunk. Tragically, this maybe means removing vertices,
-                // and messing up the indices!!
+            for cell in &splits.last().unwrap().cells {
+                cell_to_chunk[*cell] = len + splits.len()
             }
-
-            // This chunk has more cells pointing into it
-            // than the limit, so we split off all but the first
-            // <limit> cells into their own new chunk
         }
+
+        chunks.extend(splits);
     }
 }
 
@@ -87,9 +142,9 @@ pub(crate) fn chunk_to_mesh(
     mut meshes: ResMut<Assets<Mesh>>,
     // mut materials: ResMut<Assets<StandardMaterial>>,
     mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
-    mut surfaces: Query<(Entity, &ChunkSizeLimit, &mut Surface, &Transform)>,
+    mut surfaces: Query<(Entity, Option<&ChunkSizeLimit>, &mut Surface)>,
 ) {
-    for (parent, limit, mut surface, transform) in surfaces.iter_mut() {
+    for (parent, limit, surface) in surfaces.iter_mut() {
         let Surface {
             cells,
             chunks,
@@ -97,8 +152,41 @@ pub(crate) fn chunk_to_mesh(
         } = surface.into_inner();
 
         for chunk in chunks {
-            if chunk.mesh.is_some() || chunk.cell_to_face.len() > limit.0 {
+            if chunk.mesh.is_some() || (limit.is_some() && chunk.cells.len() > limit.unwrap().0) {
                 continue;
+            }
+
+            let mut local_map = BTreeMap::new();
+
+            let mut cells_sliced = Vec::new();
+            for cell_idx in &chunk.cells {
+                cells_sliced.push(&cells[*cell_idx]);
+            }
+
+            // Get all the vertices/faces but remap them into the local map first
+            // also flatten and cast to u32 as necessary for mesh
+            let mut faces = Vec::new();
+            let mut vertices = Vec::new();
+            let mut colors = Vec::new();
+            let mut normals = Vec::new();
+            let mut c = 0;
+            for cell in cells_sliced {
+                let color = [random::<f32>(), random(), random(), 1.0];
+                for face in &cell.faces {
+                    // i is an index into the cell vertices (typically 0..11)
+                    // i + c is an index into the new vertices (way bigger)
+                    for &i in face {
+                        // remap i here
+                        let i = *local_map.entry(i + c).or_insert_with(|| {
+                            vertices.push(cell.vertices[i]);
+                            vertices.len() - 1
+                        }) as u32;
+                        faces.push(i);
+                        normals.push(cell.position);
+                        colors.push(color.clone());
+                    }
+                }
+                c = faces.len();
             }
 
             // Generate a mesh for this chunk
@@ -106,34 +194,19 @@ pub(crate) fn chunk_to_mesh(
                 TriangleList,
                 RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
             )
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, chunk.vertices.clone())
-            .with_inserted_indices(Indices::U32(
-                chunk
-                    .faces
-                    .clone()
-                    .into_flattened()
-                    .iter()
-                    .map(|&c| c as u32)
-                    .collect(),
-            ))
+            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vertices)
+            .with_inserted_indices(Indices::U32(faces))
             .with_inserted_attribute(
                 Mesh::ATTRIBUTE_COLOR,
-                vec![[0.0, 0.0, 0.0, 1.0]; chunk.vertices.len()],
+                // vec![[1.0, 0.0, 0.0, 1.0]; normals.len()],
+                colors,
             )
-            .with_inserted_attribute(
-                Mesh::ATTRIBUTE_NORMAL,
-                chunk
-                    .face_to_cell
-                    .iter()
-                    .map(|&h| [cells[h as usize].position; 3])
-                    .flatten()
-                    .collect::<Vec<_>>(),
-            );
+            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
 
             // Update the chunk reference
             let mut entity = commands.spawn((
                 Wireframeable,
-                Wireframe,
+                // Wireframe,
                 Mesh3d(meshes.add(mesh)),
                 // transform.clone(),
                 Transform::IDENTITY,
