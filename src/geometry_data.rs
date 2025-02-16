@@ -19,192 +19,187 @@ pub(crate) struct GeometryData {
     cells: Vec<Vec<usize>>,
     /// Stores cell neighbors
     cell_neighbors: Vec<BTreeSet<usize>>,
-    /// Tree of the parent vertices for each vertex created out of subdivision
-    /// Subdivision technically means 3 parent vertices, but we grab one at random
-    /// The initial vertices just point to themselves for solo chunks
-    /// So that we can go back up the tree for roughly even chunking
-    chunks: Vec<usize>,
 }
 
-// #[derive(Debug)]
-// pub(crate) enum Chunk {
-//     /// Store a list of cell indices into the root geometry data
-//     Leaf(Vec<usize>),
-//     /// Stores a list of chunks of lower resolutions
-//     Parent(Vec<Chunk>),
-// }
+#[derive(Debug)]
+pub(crate) enum Chunk {
+    /// Store a list of cell indices into the root geometry data
+    Leaf(Vec<usize>),
+    /// Stores a list of chunks of lower resolutions
+    Parent(Vec<Chunk>),
+}
 
-// pub(crate) trait Chunker {
-//     fn subdivide(&self, cells: &[usize], geom: &GeometryData) -> Vec<Vec<usize>>;
-// }
+pub(crate) trait Chunker {
+    fn subdivide(&self, cells: &[usize], geom: &GeometryData) -> Vec<Vec<usize>>;
+}
 
-// pub(crate) struct FloodfillChunker {
-//     // The minimum size for a chunk
-//     min_size: usize,
-//     // The maximum amount of chunks (will try to reach this)
-//     max_chunks: usize,
-// }
+pub(crate) struct FloodfillChunker {
+    // The minimum size for a chunk
+    min_size: usize,
+    // The maximum amount of chunks (will try to reach this)
+    max_chunks: usize,
+}
 
-// impl Chunker for FloodfillChunker {
-//     fn subdivide(&self, cells: &[usize], geom: &GeometryData) -> Vec<Vec<usize>> {
-//         // If small enough, no need to subdivide
-//         if cells.len() <= self.min_size {
-//             return vec![cells.to_vec()];
-//         }
+impl Chunker for FloodfillChunker {
+    fn subdivide(&self, cells: &[usize], geom: &GeometryData) -> Vec<Vec<usize>> {
+        // If small enough, no need to subdivide
+        if cells.len() <= self.min_size {
+            return vec![cells.to_vec()];
+        }
 
-//         // Compute the number of cells per chunk
-//         // If there arent enough for max chunks, reduce the number of chunks until its over min_size
-//         let mut max_chunks = self.max_chunks;
-//         while (cells.len() / max_chunks) <= self.min_size {
-//             max_chunks -= 1;
-//             if max_chunks == 1 {
-//                 // Break early here
-//                 return vec![cells.to_vec()];
-//             };
-//         }
-//         let max_cells = cells.len() / max_chunks;
+        // Compute the number of cells per chunk
+        // If there arent enough for max chunks, reduce the number of chunks until its over min_size
+        let mut max_chunks = self.max_chunks;
+        while (cells.len() / max_chunks) <= self.min_size {
+            max_chunks -= 1;
+            if max_chunks == 1 {
+                // Break early here
+                return vec![cells.to_vec()];
+            };
+        }
+        let max_cells = cells.len() / max_chunks;
 
-//         // Otherwise, do some BFS/flood‐fill to group them up
-//         let mut visited = BTreeSet::new();
-//         let mut result = Vec::new();
+        // Otherwise, do some BFS/flood‐fill to group them up
+        let mut visited = BTreeSet::new();
+        let mut result = Vec::new();
 
-//         for &cell in cells {
-//             if visited.contains(&cell) {
-//                 continue;
-//             }
+        for &cell in cells {
+            if visited.contains(&cell) {
+                continue;
+            }
 
-//             // Start a new chunk
-//             let mut stack = VecDeque::from(vec![cell]);
-//             let mut group = Vec::new();
+            // Start a new chunk
+            let mut stack = VecDeque::from(vec![cell]);
+            let mut group = Vec::new();
 
-//             while let Some(current) = stack.pop_back() {
-//                 if !visited.insert(current) {
-//                     continue; // already visited
-//                 }
-//                 group.push(current);
+            while let Some(current) = stack.pop_back() {
+                if !visited.insert(current) {
+                    continue; // already visited
+                }
+                group.push(current);
 
-//                 // If we are about to exceed max cells, bail
-//                 if group.len() >= max_cells {
-//                     break;
-//                 }
+                // If we are about to exceed max cells, bail
+                if group.len() >= max_cells {
+                    break;
+                }
 
-//                 // Add neighbors (intersecting with `cells`) to stack
-//                 for &nbr in &geom.cell_neighbors[current] {
-//                     println!("///");
-//                     dbg!(cells.binary_search(&nbr).is_ok());
-//                     dbg!(!visited.contains(&nbr));
-//                     println!("///");
-//                     if cells.binary_search(&nbr).is_ok() && !visited.contains(&nbr) {
-//                         stack.push_front(nbr);
-//                     }
-//                 }
-//             }
-//             result.push(group);
-//         }
+                // Add neighbors (intersecting with `cells`) to stack
+                for &nbr in &geom.cell_neighbors[current] {
+                    println!("///");
+                    dbg!(cells.binary_search(&nbr).is_ok());
+                    dbg!(!visited.contains(&nbr));
+                    println!("///");
+                    if cells.binary_search(&nbr).is_ok() && !visited.contains(&nbr) {
+                        stack.push_front(nbr);
+                    }
+                }
+            }
+            result.push(group);
+        }
 
-//         println!("-----------");
-//         dbg!(cells.len());
-//         dbg!(max_chunks);
-//         dbg!(max_cells);
-//         dbg!(result.len());
-//         for item in &result {
-//             dbg!(item.len());
-//         }
-//         println!("-----------");
-//         result
-//     }
-// }
+        println!("-----------");
+        dbg!(cells.len());
+        dbg!(max_chunks);
+        dbg!(max_cells);
+        dbg!(result.len());
+        for item in &result {
+            dbg!(item.len());
+        }
+        println!("-----------");
+        result
+    }
+}
 
-// impl Chunk {
-//     fn build(cells: Vec<usize>, geom: &GeometryData, chunker: &impl Chunker) -> Self {
-//         let subsets = chunker.subdivide(&cells, geom);
+impl Chunk {
+    fn build(cells: Vec<usize>, geom: &GeometryData, chunker: &impl Chunker) -> Self {
+        let subsets = chunker.subdivide(&cells, geom);
 
-//         match subsets.len() {
-//             0 => Chunk::Leaf(cells),
-//             1 => Chunk::Leaf(subsets[0].clone()),
-//             _ => Chunk::Parent(
-//                 subsets
-//                     .into_iter()
-//                     .map(|subset| Chunk::build(subset, geom, chunker))
-//                     .collect(),
-//             ),
-//         }
-//     }
+        match subsets.len() {
+            0 => Chunk::Leaf(cells),
+            1 => Chunk::Leaf(subsets[0].clone()),
+            _ => Chunk::Parent(
+                subsets
+                    .into_iter()
+                    .map(|subset| Chunk::build(subset, geom, chunker))
+                    .collect(),
+            ),
+        }
+    }
 
-//     // Get refs to chunks at a specified depth
-//     // Depth 0 returns self
-//     fn depth(&self, depth: usize) -> Vec<&Chunk> {
-//         if depth == 0 {
-//             return vec![self];
-//         }
+    // Get refs to chunks at a specified depth
+    // Depth 0 returns self
+    fn depth(&self, depth: usize) -> Vec<&Chunk> {
+        if depth == 0 {
+            return vec![self];
+        }
 
-//         let mut result = Vec::new();
-//         match self {
-//             Chunk::Leaf(_) => result.push(self),
-//             Chunk::Parent(vec) => {
-//                 for chunk in vec {
-//                     result.extend(chunk.depth(depth - 1));
-//                 }
-//             }
-//         }
+        let mut result = Vec::new();
+        match self {
+            Chunk::Leaf(_) => result.push(self),
+            Chunk::Parent(vec) => {
+                for chunk in vec {
+                    result.extend(chunk.depth(depth - 1));
+                }
+            }
+        }
 
-//         result
-//     }
+        result
+    }
 
-//     fn local_geometry(&self, geometry_data: &GeometryData) -> GeometryData {
-//         let cells = match self {
-//             Chunk::Leaf(vec) => vec,
-//             // This one will combine the cell refs of all leaves and generate *that* mesh.
-//             Chunk::Parent(vec) => todo!(),
-//         };
+    fn local_geometry(&self, geometry_data: &GeometryData) -> GeometryData {
+        let cells = match self {
+            Chunk::Leaf(vec) => vec,
+            // This one will combine the cell refs of all leaves and generate *that* mesh.
+            Chunk::Parent(vec) => todo!(),
+        };
 
-//         // Yoink the points from the geometrydata.
-//         // When getting the associated faces... translate to local faces.
-//         // Same for cells, and store those translations in the map.
-//         let mut chunk_vertices = Vec::new();
-//         let mut chunk_faces = Vec::new();
-//         let mut chunk_cells = Vec::new();
-//         let mut cell_map = BTreeMap::new();
-//         for &cell in cells {
-//             let faces = &geometry_data.cells[cell];
-//             let mut new_cell = Vec::new();
-//             for &face in faces {
-//                 let vertices = geometry_data.faces[face];
-//                 for vert in vertices {
-//                     chunk_vertices.push(geometry_data.vertices[vert]);
-//                 }
-//                 let start = chunk_vertices.len() - 3;
-//                 chunk_faces.push([start, start + 1, start + 2]);
-//                 new_cell.push(chunk_faces.len() - 1);
-//             }
-//             chunk_cells.push(new_cell);
-//             cell_map.insert(cell, chunk_cells.len() - 1);
-//         }
+        // Yoink the points from the geometrydata.
+        // When getting the associated faces... translate to local faces.
+        // Same for cells, and store those translations in the map.
+        let mut chunk_vertices = Vec::new();
+        let mut chunk_faces = Vec::new();
+        let mut chunk_cells = Vec::new();
+        let mut cell_map = BTreeMap::new();
+        for &cell in cells {
+            let faces = &geometry_data.cells[cell];
+            let mut new_cell = Vec::new();
+            for &face in faces {
+                let vertices = geometry_data.faces[face];
+                for vert in vertices {
+                    chunk_vertices.push(geometry_data.vertices[vert]);
+                }
+                let start = chunk_vertices.len() - 3;
+                chunk_faces.push([start, start + 1, start + 2]);
+                new_cell.push(chunk_faces.len() - 1);
+            }
+            chunk_cells.push(new_cell);
+            cell_map.insert(cell, chunk_cells.len() - 1);
+        }
 
-//         let mut chunk_cell_neighbors = vec![BTreeSet::new(); chunk_cells.len()];
-//         for (&global, &local) in &cell_map {
-//             // Get adjacent cells to global
-//             // Map those to local
-//             // For the ones that can be mapped, insert them into positions:
-//             // 1. chunk_cell_neighbors[local_destination -> local]
-//             // 2. chunk_cell_neighbours[local -> local_destination]
-//             for &local_target in geometry_data.cell_neighbors[global]
-//                 .iter()
-//                 .filter_map(|n| cell_map.get(n))
-//             {
-//                 chunk_cell_neighbors[local_target].insert(local);
-//                 chunk_cell_neighbors[local].insert(local_target);
-//             }
-//         }
+        let mut chunk_cell_neighbors = vec![BTreeSet::new(); chunk_cells.len()];
+        for (&global, &local) in &cell_map {
+            // Get adjacent cells to global
+            // Map those to local
+            // For the ones that can be mapped, insert them into positions:
+            // 1. chunk_cell_neighbors[local_destination -> local]
+            // 2. chunk_cell_neighbours[local -> local_destination]
+            for &local_target in geometry_data.cell_neighbors[global]
+                .iter()
+                .filter_map(|n| cell_map.get(n))
+            {
+                chunk_cell_neighbors[local_target].insert(local);
+                chunk_cell_neighbors[local].insert(local_target);
+            }
+        }
 
-//         GeometryData {
-//             vertices: chunk_vertices,
-//             faces: chunk_faces,
-//             cells: chunk_cells,
-//             cell_neighbors: chunk_cell_neighbors,
-//         }
-//     }
-// }
+        GeometryData {
+            vertices: chunk_vertices,
+            faces: chunk_faces,
+            cells: chunk_cells,
+            cell_neighbors: chunk_cell_neighbors,
+        }
+    }
+}
 
 impl GeometryData {
     fn dual(mut self) -> Self {
@@ -329,7 +324,6 @@ impl GeometryData {
                     .entry(helpers::ordered_2tuple(u, v))
                     .or_insert_with(|| {
                         // New vertex, tell it its parent is i
-                        self.chunks.push(i);
                         self.vertices.push({
                             let x = self.vertices[u];
                             let y = self.vertices[v];
@@ -455,14 +449,11 @@ impl GeometryData {
             cell_neighbors[face[2]].insert(face[0]);
         }
 
-        let chunks = (0..vertices.len()).collect();
-
         GeometryData {
             vertices,
             faces,
             cells,
             cell_neighbors,
-            chunks,
         }
     }
 
@@ -533,35 +524,30 @@ pub(crate) fn setup_demo_sphere(
         .dual()
         .duplicate();
 
-    // let indices = (0..(geom.cells.len())).collect();
+    let indices = (0..(geom.cells.len())).collect();
 
-    // let chunker = FloodfillChunker {
-    //     min_size: 25,
-    //     max_chunks: 5,
-    // };
+    let chunker = FloodfillChunker {
+        min_size: 25,
+        max_chunks: 5,
+    };
 
-    // let chunk = Chunk::build(indices, &geom, &chunker);
-    // let d1 = chunk.depth(1);
-    // for item in &d1 {
-    //     // dbg!(item);
-    // }
-    // let mut m: Vec<_> = d1.iter().map(|c| c.local_geometry(&geom).mesh()).collect();
+    let chunk = Chunk::build(indices, &geom, &chunker);
+    let d1 = chunk.depth(1);
+    let mut m: Vec<_> = d1.iter().map(|c| c.local_geometry(&geom).mesh()).collect();
 
-    // println!("DONE!");
-
-    // for m in m {
-    commands.spawn((
-        Wireframeable,
-        Mesh3d(meshes.add(geom.mesh())),
-        Transform::IDENTITY.with_scale(Vec3::new(16.0, 16.0, 16.0)),
-        // .with_translation(Vec3::new(random(), random(), random())),
-        MeshMaterial3d(flat_materials.add(ExtendedMaterial {
-            base: StandardMaterial {
-                opaque_render_method: OpaqueRendererMethod::Auto,
-                ..Default::default()
-            },
-            extension: FlatNormalMaterial {},
-        })),
-    ));
-    // }
+    for m in m {
+        commands.spawn((
+            Wireframeable,
+            Mesh3d(meshes.add(m)),
+            Transform::IDENTITY.with_scale(Vec3::new(16.0, 16.0, 16.0)),
+            // .with_translation(Vec3::new(random(), random(), random())),
+            MeshMaterial3d(flat_materials.add(ExtendedMaterial {
+                base: StandardMaterial {
+                    opaque_render_method: OpaqueRendererMethod::Auto,
+                    ..Default::default()
+                },
+                extension: FlatNormalMaterial {},
+            })),
+        ));
+    }
 }
