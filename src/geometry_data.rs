@@ -63,6 +63,8 @@ impl Chunker for FloodfillChunker {
         let mut visited = BTreeSet::new();
         let mut result = Vec::new();
 
+        let cell_set: BTreeSet<usize> = cells.iter().copied().collect();
+
         for &cell in cells {
             if visited.contains(&cell) {
                 continue;
@@ -85,11 +87,7 @@ impl Chunker for FloodfillChunker {
 
                 // Add neighbors (intersecting with `cells`) to stack
                 for &nbr in &geom.cell_neighbors[current] {
-                    println!("///");
-                    dbg!(cells.binary_search(&nbr).is_ok());
-                    dbg!(!visited.contains(&nbr));
-                    println!("///");
-                    if cells.binary_search(&nbr).is_ok() && !visited.contains(&nbr) {
+                    if cell_set.contains(&nbr) && !visited.contains(&nbr) {
                         stack.push_front(nbr);
                     }
                 }
@@ -97,15 +95,6 @@ impl Chunker for FloodfillChunker {
             result.push(group);
         }
 
-        println!("-----------");
-        dbg!(cells.len());
-        dbg!(max_chunks);
-        dbg!(max_cells);
-        dbg!(result.len());
-        for item in &result {
-            dbg!(item.len());
-        }
-        println!("-----------");
         result
     }
 }
@@ -146,12 +135,22 @@ impl Chunk {
         result
     }
 
+    fn cells(&self) -> Vec<usize> {
+        let mut result = Vec::new();
+        match self {
+            Chunk::Leaf(vec) => result.extend_from_slice(vec),
+            Chunk::Parent(vec) => {
+                for chunk in vec {
+                    result.extend(chunk.cells());
+                }
+            }
+        }
+
+        result
+    }
+
     fn local_geometry(&self, geometry_data: &GeometryData) -> GeometryData {
-        let cells = match self {
-            Chunk::Leaf(vec) => vec,
-            // This one will combine the cell refs of all leaves and generate *that* mesh.
-            Chunk::Parent(vec) => todo!(),
-        };
+        let cells = self.cells();
 
         // Yoink the points from the geometrydata.
         // When getting the associated faces... translate to local faces.
@@ -160,7 +159,7 @@ impl Chunk {
         let mut chunk_faces = Vec::new();
         let mut chunk_cells = Vec::new();
         let mut cell_map = BTreeMap::new();
-        for &cell in cells {
+        for cell in cells {
             let faces = &geometry_data.cells[cell];
             let mut new_cell = Vec::new();
             for &face in faces {
@@ -518,7 +517,7 @@ pub(crate) fn setup_demo_sphere(
     mut commands: Commands,
 ) {
     let geom = GeometryData::icosahedron()
-        .subdivide_n(2)
+        .subdivide_n(11)
         .slerp()
         .recell()
         .dual()
@@ -527,12 +526,12 @@ pub(crate) fn setup_demo_sphere(
     let indices = (0..(geom.cells.len())).collect();
 
     let chunker = FloodfillChunker {
-        min_size: 25,
-        max_chunks: 5,
+        min_size: 500,
+        max_chunks: 12,
     };
 
     let chunk = Chunk::build(indices, &geom, &chunker);
-    let d1 = chunk.depth(1);
+    let d1 = chunk.depth(5);
     let mut m: Vec<_> = d1.iter().map(|c| c.local_geometry(&geom).mesh()).collect();
 
     for m in m {
