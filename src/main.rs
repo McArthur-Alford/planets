@@ -1,41 +1,31 @@
-// mod colors;
+mod camera;
+mod chunking;
 mod fibonacci_sphere;
 mod fibonacci_sphere_visualiser;
 mod flatnormal;
 mod geometry_data;
-// mod goldberg;
 mod helpers;
-// mod icosahedron;
-// mod surface;
 
 use bevy::{
     color::palettes::css::GREEN,
+    gizmos::GizmoPlugin,
     pbr::wireframe::{Wireframe, WireframeConfig, WireframePlugin},
     prelude::*,
     render::{
         settings::{RenderCreation, WgpuFeatures, WgpuSettings},
         RenderPlugin,
     },
-    time::common_conditions::on_timer,
 };
 use bevy_fps_counter::FpsCounterPlugin;
-use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
-// use colors::{randomize_colors, update_mesh_colors};
+use bevy_panorbit_camera::PanOrbitCameraPlugin;
+use camera::{position_camera, setup_camera};
 use flatnormal::FlatNormalMaterialPlugin;
 use geometry_data::setup_demo_sphere;
-// use goldberg::setup_hex;
-use std::time::Duration;
-// use surface::{chunk_to_mesh, orderless_chunker};
+
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct Gizmos;
 
 fn setup(mut commands: Commands) {
-    commands.spawn((
-        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        PanOrbitCamera {
-            radius: Some(60.0),
-            ..Default::default()
-        },
-    ));
-
     commands.spawn(DirectionalLight {
         ..Default::default()
     });
@@ -64,23 +54,9 @@ fn main() {
             global: false,
             default_color: GREEN.into(),
         })
-        .add_systems(Startup, (setup, setup_demo_sphere))
+        .add_systems(Startup, (setup, setup_demo_sphere, setup_camera))
         .add_systems(Update, toggle_wireframe)
-        // .add_systems(
-        //     FixedUpdate,
-        //     (
-        //         chunk_to_mesh,
-        //         orderless_chunker.run_if(on_timer(Duration::from_millis(10))),
-        //     ),
-        // )
-        // .add_systems(
-        //     Update,
-        //     (
-        //         update_mesh_colors,
-        //         randomize_colors.run_if(on_timer(Duration::from_millis(50))),
-        //     ),
-        // )
-        .add_systems(FixedUpdate, spin_light)
+        .add_systems(FixedUpdate, (spin_light, position_camera))
         .run();
 }
 
