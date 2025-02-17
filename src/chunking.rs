@@ -1,177 +1,74 @@
+use bevy::prelude::*;
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::geometry_data::GeometryData;
-use std::collections::BTreeMap;
-use std::collections::BTreeSet;
-use std::collections::VecDeque;
+use crate::octree::{Octree, Point};
 
-#[derive(Debug)]
-pub(crate) enum Chunk {
-    /// Store a list of cell indices into the root geometry data
-    Leaf(Vec<usize>),
-    /// Stores a list of chunks of lower resolutions
-    Parent(Vec<Chunk>),
+#[derive(Component)]
+pub struct ChunkManager {
+    pub geometry: GeometryData,
+    pub octree: Octree,
 }
 
-pub(crate) trait Chunker {
-    fn subdivide(&self, cells: &[usize], geom: &GeometryData) -> Vec<Vec<usize>>;
-}
+impl ChunkManager {
+    pub fn new(geometry: GeometryData) -> Self {
+        let capacity = 32;
 
-pub(crate) struct FloodfillChunker {
-    // The minimum size for a chunk
-    pub(crate) min_size: usize,
-    // The maximum amount of chunks (will try to reach this)
-    pub(crate) max_chunks: usize,
-}
+        let bounds = 1.0;
+        let center = Vec3::ZERO;
 
-impl Chunker for FloodfillChunker {
-    fn subdivide(&self, cells: &[usize], geom: &GeometryData) -> Vec<Vec<usize>> {
-        // If small enough, no need to subdivide
-        if cells.len() <= self.min_size {
-            return vec![cells.to_vec()];
+        let mut octree = Octree::new(capacity, center, bounds, 0);
+
+        for (cell_index, &position) in geometry.cell_normals.iter().enumerate() {
+            octree.insert(Point {
+                position,
+                value: cell_index,
+            });
         }
 
-        // Compute the number of cells per chunk
-        // If there arent enough for max chunks, reduce the number of chunks until its over min_size
-        let mut max_chunks = self.max_chunks;
-        while (cells.len() / max_chunks) <= self.min_size {
-            max_chunks -= 1;
-            if max_chunks == 1 {
-                // Break early here
-                return vec![cells.to_vec()];
-            };
-        }
-        let max_cells = cells.len() / max_chunks;
-
-        // Otherwise, do some BFS/flood‐fill to group them up
-        let mut visited = BTreeSet::new();
-        let mut result = Vec::new();
-
-        let cell_set: BTreeSet<usize> = cells.iter().copied().collect();
-
-        for &cell in cells {
-            if visited.contains(&cell) {
-                continue;
-            }
-
-            // Start a new chunk
-            let mut stack = VecDeque::from(vec![cell]);
-            let mut group = Vec::new();
-
-            while let Some(current) = stack.pop_back() {
-                if !visited.insert(current) {
-                    continue; // already visited
-                }
-                group.push(current);
-
-                // If we are about to exceed max cells, bail
-                if group.len() >= max_cells {
-                    break;
-                }
-
-                // Add neighbors (intersecting with `cells`) to stack
-                for &nbr in &geom.cell_neighbors[current] {
-                    if cell_set.contains(&nbr) && !visited.contains(&nbr) {
-                        stack.push_front(nbr);
-                    }
-                }
-            }
-            result.push(group);
-        }
-
-        result
-    }
-}
-
-impl Chunk {
-    pub(crate) fn build(cells: Vec<usize>, geom: &GeometryData, chunker: &impl Chunker) -> Self {
-        let subsets = chunker.subdivide(&cells, geom);
-
-        match subsets.len() {
-            0 => Chunk::Leaf(cells),
-            1 => Chunk::Leaf(subsets[0].clone()),
-            _ => Chunk::Parent(
-                subsets
-                    .into_iter()
-                    .map(|subset| Chunk::build(subset, geom, chunker))
-                    .collect(),
-            ),
-        }
+        Self { geometry, octree }
     }
 
-    // Get refs to chunks at a specified depth
-    // Depth 0 returns self
-    pub(crate) fn depth(&self, depth: usize) -> Vec<&Chunk> {
-        if depth == 0 {
-            return vec![self];
-        }
-
-        let mut result = Vec::new();
-        match self {
-            Chunk::Leaf(_) => result.push(self),
-            Chunk::Parent(vec) => {
-                for chunk in vec {
-                    result.extend(chunk.depth(depth - 1));
-                }
-            }
-        }
-
-        result
+    pub fn get_chunks(&self, target: Vec3) -> Vec<Vec<usize>> {
+        self.octree.get_chunks(target)
     }
 
-    pub(crate) fn cells(&self) -> Vec<usize> {
-        let mut result = Vec::new();
-        match self {
-            Chunk::Leaf(vec) => result.extend_from_slice(vec),
-            Chunk::Parent(vec) => {
-                for chunk in vec {
-                    result.extend(chunk.cells());
-                }
-            }
-        }
-
-        result
-    }
-
-    pub(crate) fn local_geometry(&self, geometry_data: &GeometryData) -> GeometryData {
-        let cells = self.cells();
-
-        // Yoink the points from the geometrydata.
-        // When getting the associated faces... translate to local faces.
-        // Same for cells, and store those translations in the map.
+    pub fn build_chunk_geometry(&self, cells: &[usize]) -> GeometryData {
         let mut chunk_vertices = Vec::new();
         let mut chunk_faces = Vec::new();
         let mut chunk_cells = Vec::new();
-        let mut cell_map = BTreeMap::new();
         let mut chunk_cell_normals = Vec::new();
-        for cell in cells {
-            let faces = &geometry_data.cells[cell];
-            let mut new_cell = Vec::new();
-            for &face in faces {
-                let vertices = geometry_data.faces[face];
-                for vert in vertices {
-                    chunk_vertices.push(geometry_data.vertices[vert]);
+
+        let mut cell_map = BTreeMap::new();
+
+        for &cell in cells {
+            let face_indices = &self.geometry.cells[cell];
+            let mut new_cell_faces = Vec::new();
+
+            for &face_idx in face_indices {
+                let face = self.geometry.faces[face_idx];
+
+                for &vert_idx in &face {
+                    chunk_vertices.push(self.geometry.vertices[vert_idx]);
                 }
+
                 let start = chunk_vertices.len() - 3;
                 chunk_faces.push([start, start + 1, start + 2]);
-                new_cell.push(chunk_faces.len() - 1);
+                new_cell_faces.push(chunk_faces.len() - 1);
             }
-            chunk_cells.push(new_cell);
-            chunk_cell_normals.push(geometry_data.cell_normals[cell]);
+
+            chunk_cells.push(new_cell_faces);
+            chunk_cell_normals.push(self.geometry.cell_normals[cell]);
             cell_map.insert(cell, chunk_cells.len() - 1);
         }
 
         let mut chunk_cell_neighbors = vec![BTreeSet::new(); chunk_cells.len()];
-        for (&global, &local) in &cell_map {
-            // Get adjacent cells to global
-            // Map those to local
-            // For the ones that can be mapped, insert them into positions:
-            // 1. chunk_cell_neighbors[local_destination -> local]
-            // 2. chunk_cell_neighbours[local -> local_destination]
-            for &local_target in geometry_data.cell_neighbors[global]
-                .iter()
-                .filter_map(|n| cell_map.get(n))
-            {
-                chunk_cell_neighbors[local_target].insert(local);
-                chunk_cell_neighbors[local].insert(local_target);
+        for (&global_cell, &local_cell) in &cell_map {
+            for &neighbor in &self.geometry.cell_neighbors[global_cell] {
+                if let Some(&local_neighbor) = cell_map.get(&neighbor) {
+                    chunk_cell_neighbors[local_cell].insert(local_neighbor);
+                    chunk_cell_neighbors[local_neighbor].insert(local_cell);
+                }
             }
         }
 
@@ -182,5 +79,12 @@ impl Chunk {
             cell_neighbors: chunk_cell_neighbors,
             cell_normals: chunk_cell_normals,
         }
+    }
+
+    pub fn build_geometries_for_chunks(&self, chunk_list: Vec<Vec<usize>>) -> Vec<GeometryData> {
+        chunk_list
+            .into_iter()
+            .map(|cells| self.build_chunk_geometry(&cells))
+            .collect()
     }
 }

@@ -5,6 +5,7 @@ use rand::{random, random_range};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::camera::CameraTarget;
+use crate::chunking::ChunkManager;
 use crate::flatnormal::FlatNormalMaterial;
 use crate::helpers::{self, sort_poly_vertices};
 use crate::{chunking, Wireframeable};
@@ -308,7 +309,7 @@ impl GeometryData {
         let centroids = &self.cell_normals;
         let mut normals = vec![Vec3::ZERO; self.vertices.len()];
         for (ci, cell) in self.cells.iter().enumerate() {
-            let r = -0.1..0.1;
+            let r = -0.0..=0.0;
             let x = random_range(r.clone());
             let y = random_range(r.clone());
             let z = random_range(r);
@@ -345,11 +346,13 @@ pub(crate) fn setup_demo_sphere(
     mut commands: Commands,
 ) {
     let geom = GeometryData::icosahedron()
-        .subdivide_n(3)
+        .subdivide_n(4)
         .slerp()
         .recell()
         .dual()
         .duplicate();
+
+    let chunker = ChunkManager::new(geom);
 
     // let indices = (0..(geom.cells.len())).collect();
 
@@ -362,21 +365,23 @@ pub(crate) fn setup_demo_sphere(
     // let d1 = chunk.depth(5);
     // let mut m: Vec<_> = d1.iter().map(|c| c.local_geometry(&geom).mesh()).collect();
 
-    // commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
+    commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
 
-    // for m in m {
-    commands.spawn((
-        Wireframeable,
-        Mesh3d(meshes.add(geom.mesh())),
-        Transform::IDENTITY.with_scale(Vec3::new(32.0, 32.0, 32.0)),
-        // .with_translation(Vec3::new(random(), random(), random())),
-        MeshMaterial3d(flat_materials.add(ExtendedMaterial {
-            base: StandardMaterial {
-                opaque_render_method: OpaqueRendererMethod::Auto,
-                ..Default::default()
-            },
-            extension: FlatNormalMaterial {},
-        })),
-    ));
-    // }
+    let chunks = chunker.get_chunks(Vec3::new(1.0, 0.0, 0.0).normalize());
+    let geoms = chunker.build_geometries_for_chunks(chunks);
+    for geom in geoms {
+        commands.spawn((
+            Wireframeable,
+            Mesh3d(meshes.add(geom.mesh())),
+            Transform::IDENTITY.with_scale(Vec3::new(32.0, 32.0, 32.0)),
+            // .with_translation(Vec3::new(random(), random(), random())),
+            MeshMaterial3d(flat_materials.add(ExtendedMaterial {
+                base: StandardMaterial {
+                    opaque_render_method: OpaqueRendererMethod::Auto,
+                    ..Default::default()
+                },
+                extension: FlatNormalMaterial {},
+            })),
+        ));
+    }
 }

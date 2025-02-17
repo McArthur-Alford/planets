@@ -8,26 +8,26 @@ use crate::geometry_data::GeometryData;
 // Break space up into cubic chunks, each containing cells.
 
 #[derive(Debug)]
-struct Point {
-    position: Vec3,
-    value: usize,
+pub(crate) struct Point {
+    pub(crate) position: Vec3,
+    pub(crate) value: usize,
 }
 
 /// an octree that performs redistribution of ALL points into children
 /// when the capacity is met
 #[derive(Component, Debug)]
 pub(crate) struct Octree {
-    children: Box<[Option<Octree>; 8]>,
-    center: Vec3,
-    points: Option<Vec<Point>>,
-    capacity: usize,
-    bounds: f32,   // The distance to the edge of the octree from the center (half-width)
-    height: usize, // The height of this node (distance from furthest leaf)
-    depth: usize,
+    pub(crate) children: Box<[Option<Octree>; 8]>,
+    pub(crate) center: Vec3,
+    pub(crate) points: Option<Vec<Point>>,
+    pub(crate) capacity: usize,
+    pub(crate) bounds: f32, // The distance to the edge of the octree from the center (half-width)
+    pub(crate) height: usize, // The height of this node (distance from furthest leaf)
+    pub(crate) depth: usize,
 }
 
 impl Octree {
-    fn new(capacity: usize, center: Vec3, bounds: f32, depth: usize) -> Self {
+    pub(crate) fn new(capacity: usize, center: Vec3, bounds: f32, depth: usize) -> Self {
         Octree {
             children: Box::new([const { None }; 8]),
             center,
@@ -39,7 +39,7 @@ impl Octree {
         }
     }
 
-    fn pos_to_child(&self, pos: Vec3) -> usize {
+    pub(crate) fn pos_to_child(&self, pos: Vec3) -> usize {
         let diff = (pos - self.center).signum();
 
         // Diff is -1 and 1
@@ -54,7 +54,7 @@ impl Octree {
         index as usize
     }
 
-    fn insert(&mut self, point: Point) {
+    pub(crate) fn insert(&mut self, point: Point) {
         // Add points to self if points is some and within capacity
         if self.points.is_some() && self.points.as_ref().unwrap().len() <= self.capacity {
             self.points.as_mut().unwrap().push(point);
@@ -92,7 +92,7 @@ impl Octree {
         }
     }
 
-    fn cells(&self) -> Vec<usize> {
+    pub(crate) fn cells(&self) -> Vec<usize> {
         let mut results = Vec::new();
         if let Some(points) = &self.points {
             results.extend(points.iter().map(|p| p.value).collect::<Vec<_>>());
@@ -107,13 +107,14 @@ impl Octree {
         results
     }
 
-    fn get_chunks(&self, target: Vec3) -> Vec<Vec<usize>> {
-        let multiplier = (1 / self.height) as f32 * self.bounds; // 1/max_depth steps
+    pub(crate) fn get_chunks(&self, target: Vec3) -> Vec<Vec<usize>> {
+        let multiplier = (1.0 / self.height as f32) * self.bounds; // 1/max_depth steps
 
         let projected = target.clamp(
             self.center - Vec3::splat(self.bounds),
             self.center + Vec3::splat(self.bounds),
         );
+
         let dist = projected.distance(target);
         let mut desired_height = 0;
 
@@ -122,13 +123,15 @@ impl Octree {
         }
 
         let mut results = Vec::new();
-        if desired_height == self.height {
+        if desired_height >= self.height {
             // Yay, return our current set of cells
             results.push(self.cells());
         } else if desired_height < self.height {
             // Nope, we are too high up, recurse to lower heights
+            let mut a = true;
             for child in self.children.iter() {
                 if let Some(child) = child {
+                    a = false;
                     results.extend(child.get_chunks(target));
                 };
             }
