@@ -346,7 +346,7 @@ pub(crate) fn setup_demo_sphere(
     mut commands: Commands,
 ) {
     let geom = GeometryData::icosahedron()
-        .subdivide_n(6)
+        .subdivide_n(9)
         .slerp()
         .recell()
         .dual()
@@ -354,20 +354,9 @@ pub(crate) fn setup_demo_sphere(
 
     let chunker = ChunkManager::new(geom);
 
-    // let indices = (0..(geom.cells.len())).collect();
-
-    // let chunker = chunking::FloodfillChunker {
-    //     min_size: 50,
-    //     max_chunks: 12,
-    // };
-
-    // let chunk = chunking::Chunk::build(indices, &geom, &chunker);
-    // let d1 = chunk.depth(5);
-    // let mut m: Vec<_> = d1.iter().map(|c| c.local_geometry(&geom).mesh()).collect();
-
     commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
 
-    let chunks = chunker.get_chunks(Vec3::new(1.0, 0.0, 0.0).normalize());
+    let chunks = chunker.get_chunks(Vec3::new(1.0, 1.0, 1.0).normalize());
     let geoms = chunker.build_geometries_for_chunks(chunks);
     for geom in geoms {
         commands.spawn((
@@ -384,4 +373,5 @@ pub(crate) fn setup_demo_sphere(
             })),
         ));
     }
+    commands.spawn(chunker);
 }

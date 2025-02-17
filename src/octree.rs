@@ -1,13 +1,13 @@
-use bevy::{pbr::wireframe::Wireframe, prelude::*};
+use bevy::{math::NormedVectorSpace, pbr::wireframe::Wireframe, prelude::*};
 use bevy_panorbit_camera::PanOrbitCamera;
 use rand::random;
 
-use crate::geometry_data::GeometryData;
+use crate::{chunking::ChunkManager, geometry_data::GeometryData};
 
 // The plan:
 // Break space up into cubic chunks, each containing cells.
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Point {
     pub(crate) position: Vec3,
     pub(crate) value: usize,
@@ -15,7 +15,7 @@ pub(crate) struct Point {
 
 /// an octree that performs redistribution of ALL points into children
 /// when the capacity is met
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub(crate) struct Octree {
     pub(crate) children: Box<[Option<Octree>; 8]>,
     pub(crate) center: Vec3,
@@ -24,10 +24,17 @@ pub(crate) struct Octree {
     pub(crate) bounds: f32, // The distance to the edge of the octree from the center (half-width)
     pub(crate) height: usize, // The height of this node (distance from furthest leaf)
     pub(crate) depth: usize,
+    pub(crate) octree_index: Vec<u8>,
 }
 
 impl Octree {
-    pub(crate) fn new(capacity: usize, center: Vec3, bounds: f32, depth: usize) -> Self {
+    pub(crate) fn new(
+        capacity: usize,
+        center: Vec3,
+        bounds: f32,
+        depth: usize,
+        octree_index: Vec<u8>,
+    ) -> Self {
         Octree {
             children: Box::new([const { None }; 8]),
             center,
@@ -36,6 +43,7 @@ impl Octree {
             bounds,
             height: 0,
             depth,
+            octree_index: octree_index,
         }
     }
 
@@ -54,7 +62,7 @@ impl Octree {
         index as usize
     }
 
-    pub(crate) fn insert(&mut self, point: Point) {
+    pub(crate) fn insert(&mut self, mut point: Point) {
         // Add points to self if points is some and within capacity
         if self.points.is_some() && self.points.as_ref().unwrap().len() <= self.capacity {
             self.points.as_mut().unwrap().push(point);
@@ -66,11 +74,14 @@ impl Octree {
         let index = self.pos_to_child(point.position);
         if self.children[index].is_none() {
             let center = self.center + (point.position - self.center).signum() * self.bounds / 2.0;
+            let mut octree_index = self.octree_index.clone();
+            octree_index.push(index as u8);
             self.children[index] = Some(Octree::new(
                 self.capacity,
                 center,
                 self.bounds / 2.,
                 self.depth + 1,
+                octree_index,
             ));
         }
         self.children[index].as_mut().map(|ot| ot.insert(point));
@@ -115,10 +126,10 @@ impl Octree {
             self.center + Vec3::splat(self.bounds),
         );
 
-        let dist = projected.distance(target);
+        let dist = projected.distance_squared(target).powf(1.5);
         let mut desired_height = 0;
 
-        while dist >= (desired_height as f32 + 1.) * multiplier {
+        while dist >= (desired_height as f32 + 0.1) * multiplier {
             desired_height += 1;
         }
 
@@ -128,10 +139,8 @@ impl Octree {
             results.push(self.cells());
         } else if desired_height < self.height {
             // Nope, we are too high up, recurse to lower heights
-            let mut a = true;
             for child in self.children.iter() {
                 if let Some(child) = child {
-                    a = false;
                     results.extend(child.get_chunks(target));
                 };
             }
@@ -145,7 +154,7 @@ impl Octree {
 pub(crate) struct OctreeVisualiser;
 
 pub(crate) fn octree_visualiser(
-    octree_query: Query<&Octree>,
+    octree_query: Query<&ChunkManager>,
     visualiser_query: Query<Entity, With<OctreeVisualiser>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -154,7 +163,11 @@ pub(crate) fn octree_visualiser(
         commands.entity(entity).despawn();
     }
 
-    let mut qts = vec![octree_query.single()];
+    if octree_query.is_empty() {
+        return;
+    }
+
+    let mut qts = vec![octree_query.single().octree.clone()];
     let mut chunk_meshes = Vec::new();
 
     while let Some(qt) = qts.pop() {
@@ -165,7 +178,7 @@ pub(crate) fn octree_visualiser(
         );
         for child in qt.children.iter() {
             if let Some(child) = child {
-                qts.push(child);
+                qts.push(child.clone());
             }
         }
     }
@@ -177,29 +190,16 @@ pub(crate) fn octree_visualiser(
 
     commands.spawn((
         Mesh3d(meshes.add(mesh)),
-        Transform::default(),
+        Transform::default().with_scale(Vec3::splat(32.0)),
         Wireframe,
         OctreeVisualiser,
     ));
 }
 
-pub(crate) struct OctreeDemoPlugin;
+pub(crate) struct OctreeVisualiserPlugin;
 
-pub(crate) fn octree_demo_startup(mut commands: Commands) {
-    let mut octree = Octree::new(5, Vec3::ZERO, 50.0, 0);
-
-    let vertices = GeometryData::icosahedron()
-        .subdivide_n(4)
-        .slerp()
-        .recell()
-        // .dual()
-        .duplicate();
-    for v in vertices.vertices {
-        octree.insert(Point {
-            position: v * 32.,
-            value: 1,
-        });
-    }
+pub(crate) fn octree_visualiser_startup(mut commands: Commands) {
+    let mut octree = Octree::new(5, Vec3::ZERO, 50.0, 0, vec![0]);
 
     commands.spawn(octree);
 
@@ -212,13 +212,13 @@ pub(crate) fn octree_demo_startup(mut commands: Commands) {
     ));
 }
 
-impl Plugin for OctreeDemoPlugin {
+impl Plugin for OctreeVisualiserPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
-            Startup,
+            PostStartup,
             (
-                octree_demo_startup,
-                octree_visualiser.after(octree_demo_startup),
+                // octree_visualiser_startup,
+                octree_visualiser,
             ),
         );
     }

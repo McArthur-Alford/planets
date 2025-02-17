@@ -12,12 +12,12 @@ pub struct ChunkManager {
 
 impl ChunkManager {
     pub fn new(geometry: GeometryData) -> Self {
-        let capacity = 4;
+        let capacity = 256;
 
         let bounds = 1.0;
         let center = Vec3::ZERO;
 
-        let mut octree = Octree::new(capacity, center, bounds, 0);
+        let mut octree = Octree::new(capacity, center, bounds, 0, vec![0]);
 
         for (cell_index, &position) in geometry.cell_normals.iter().enumerate() {
             octree.insert(Point {
