@@ -5,6 +5,7 @@ mod fibonacci_sphere_visualiser;
 mod flatnormal;
 mod geometry_data;
 mod helpers;
+mod octree;
 
 use bevy::{
     color::palettes::css::GREEN,
@@ -18,9 +19,10 @@ use bevy::{
 };
 use bevy_fps_counter::FpsCounterPlugin;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
-use camera::{position_camera, setup_camera};
+use camera::{mouse_drag, mouse_scroll, position_camera, setup_camera};
 use flatnormal::FlatNormalMaterialPlugin;
 use geometry_data::setup_demo_sphere;
+use octree::OcTreeDemoPlugin;
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
 struct Gizmos;
@@ -50,13 +52,16 @@ fn main() {
         .add_plugins(FlatNormalMaterialPlugin)
         .add_plugins((PanOrbitCameraPlugin, WireframePlugin))
         .add_plugins(FpsCounterPlugin)
+        .add_plugins(OcTreeDemoPlugin)
+        // .add_plugins(CameraPlugin)
         .insert_resource(WireframeConfig {
             global: false,
             default_color: GREEN.into(),
         })
-        .add_systems(Startup, (setup, setup_demo_sphere, setup_camera))
+        .add_systems(Startup, (setup))
+        // .add_systems(Startup, setup_demo_sphere)
         .add_systems(Update, toggle_wireframe)
-        .add_systems(FixedUpdate, (spin_light, position_camera))
+        .add_systems(FixedUpdate, (spin_light))
         .run();
 }
 

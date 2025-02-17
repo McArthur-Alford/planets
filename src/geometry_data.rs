@@ -22,7 +22,7 @@ pub(crate) struct GeometryData {
 }
 
 impl GeometryData {
-    fn dual(mut self) -> Self {
+    pub(crate) fn dual(mut self) -> Self {
         let mut dual_vertices = Vec::new();
         let mut dual_faces = Vec::new();
         let mut dual_cells = Vec::new();
@@ -93,7 +93,7 @@ impl GeometryData {
     }
 
     /// Duplicates vertices (necessary for proper normals)
-    fn duplicate(mut self) -> Self {
+    pub(crate) fn duplicate(mut self) -> Self {
         let mut new_vertices = Vec::with_capacity(self.faces.len() * 3);
         let mut new_faces = Vec::with_capacity(self.faces.len());
 
@@ -116,14 +116,14 @@ impl GeometryData {
         self
     }
 
-    fn subdivide_n(mut self, n: usize) -> Self {
+    pub(crate) fn subdivide_n(mut self, n: usize) -> Self {
         for _ in 0..n {
             self = self.subdivide();
         }
         self
     }
 
-    fn subdivide(mut self) -> Self {
+    pub(crate) fn subdivide(mut self) -> Self {
         // Subdivides self once
         // For each face:
         // 1) Split each edge with a new vertex in the middle.
@@ -164,22 +164,22 @@ impl GeometryData {
         self
     }
 
-    fn slerp(mut self) -> Self {
+    pub(crate) fn slerp(mut self) -> Self {
         for vertex in self.vertices.iter_mut() {
             std::mem::swap(vertex, &mut vertex.normalize());
         }
         self
     }
 
-    fn deregulate(mut self) -> Self {
+    pub(crate) fn deregulate(mut self) -> Self {
         self
     }
 
-    fn relax(mut self) -> Self {
+    pub(crate) fn relax(mut self) -> Self {
         self
     }
 
-    fn recell(mut self) -> Self {
+    pub(crate) fn recell(mut self) -> Self {
         let mut cells = BTreeMap::new();
         for (i, face) in self.faces.iter().enumerate() {
             for &v in face {
@@ -202,7 +202,7 @@ impl GeometryData {
         self
     }
 
-    fn icosahedron() -> Self {
+    pub(crate) fn icosahedron() -> Self {
         let phi = (1.0 + 5.0_f32.sqrt()) / 2.0;
         let du = 1.0 / (phi * phi + 1.0).sqrt();
         let dv = phi * du;
@@ -278,7 +278,7 @@ impl GeometryData {
     }
 
     // Returns the centroid of each cell
-    fn cell_centroids(&self) -> Vec<Vec3> {
+    pub(crate) fn cell_centroids(&self) -> Vec<Vec3> {
         self.cells
             .iter()
             .map(|fs| {
@@ -297,11 +297,11 @@ impl GeometryData {
 
     // Returns the normal for each vertex
     // assumes that vertex duplication has been done otherwise results are wierd
-    fn flat_normals(&self) -> Vec<Vec3> {
+    pub(crate) fn flat_normals(&self) -> Vec<Vec3> {
         let centroids = self.cell_centroids();
         let mut normals = vec![Vec3::ZERO; self.vertices.len()];
         for (ci, cell) in self.cells.iter().enumerate() {
-            let r = -0.2..0.2;
+            let r = -0.1..0.1;
             let x = random_range(r.clone());
             let y = random_range(r.clone());
             let z = random_range(r);
@@ -314,7 +314,7 @@ impl GeometryData {
         normals
     }
 
-    fn mesh(&self) -> Mesh {
+    pub(crate) fn mesh(&self) -> Mesh {
         let len = self.vertices.len();
         Mesh::new(
             TriangleList,
@@ -338,7 +338,7 @@ pub(crate) fn setup_demo_sphere(
     mut commands: Commands,
 ) {
     let geom = GeometryData::icosahedron()
-        .subdivide_n(4)
+        .subdivide_n(7)
         .slerp()
         .recell()
         .dual()
