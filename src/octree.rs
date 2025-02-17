@@ -148,6 +148,46 @@ impl Octree {
 
         results
     }
+
+    pub(crate) fn get_chunk_indices(&self, target: Vec3) -> Vec<Vec<u8>> {
+        let multiplier = (1.0 / self.height.max(1) as f32) * self.bounds;
+        let projected = target.clamp(
+            self.center - Vec3::splat(self.bounds),
+            self.center + Vec3::splat(self.bounds),
+        );
+        let dist = projected.distance_squared(target).powf(1.5);
+        let mut desired_height = 0;
+        while dist >= (desired_height as f32 + 0.1) * multiplier {
+            desired_height += 1;
+        }
+
+        let mut results = Vec::new();
+        if desired_height >= self.height {
+            results.push(self.octree_index.clone());
+        } else {
+            for child in self.children.iter().flatten() {
+                results.extend(child.get_chunk_indices(target));
+            }
+        }
+        results
+    }
+
+    pub(crate) fn get_cells_for_index(&self, index_path: &[u8]) -> Option<Vec<usize>> {
+        if self.octree_index == index_path {
+            return Some(self.cells());
+        }
+
+        if index_path.starts_with(&self.octree_index) && index_path.len() > self.octree_index.len()
+        {
+            let next_child = index_path[self.octree_index.len()] as usize;
+            if let Some(ref child) = self.children[next_child] {
+                return child.get_cells_for_index(index_path);
+            } else {
+                return None;
+            }
+        }
+        None
+    }
 }
 
 #[derive(Component)]

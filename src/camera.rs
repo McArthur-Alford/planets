@@ -44,6 +44,10 @@ pub(crate) fn position_camera(
     target: Query<(&Transform, &CameraTarget), Without<GameCamera>>,
     mut gizmos: Gizmos<DefaultGizmoConfigGroup>,
 ) {
+    if camera.is_empty() || target.is_empty() {
+        return;
+    }
+
     let mut camera_transform = camera.single_mut();
     let (target_transform, CameraTarget { radius }) = target.single();
 

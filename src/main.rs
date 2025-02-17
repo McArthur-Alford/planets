@@ -20,6 +20,7 @@ use bevy::{
 use bevy_fps_counter::FpsCounterPlugin;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use camera::{mouse_drag, mouse_scroll, position_camera, setup_camera, CameraPlugin};
+use chunking::{setup_demo_chunk_manager, ChunkManagerDemoPlugin};
 use flatnormal::FlatNormalMaterialPlugin;
 use geometry_data::setup_demo_sphere;
 use octree::OctreeVisualiserPlugin;
@@ -54,12 +55,13 @@ fn main() {
         .add_plugins(FpsCounterPlugin)
         // .add_plugins(OctreeVisualiserPlugin)
         .add_plugins(CameraPlugin)
+        .add_plugins(ChunkManagerDemoPlugin)
         .insert_resource(WireframeConfig {
             global: false,
             default_color: GREEN.into(),
         })
         .add_systems(Startup, (setup))
-        .add_systems(Startup, setup_demo_sphere)
+        // .add_systems(Startup, setup_demo_sphere)
         .add_systems(Update, toggle_wireframe)
         .add_systems(FixedUpdate, (spin_light))
         .run();

@@ -356,22 +356,22 @@ pub(crate) fn setup_demo_sphere(
 
     commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
 
-    let chunks = chunker.get_chunks(Vec3::new(1.0, 1.0, 1.0).normalize());
-    let geoms = chunker.build_geometries_for_chunks(chunks);
-    for geom in geoms {
-        commands.spawn((
-            Wireframeable,
-            Mesh3d(meshes.add(geom.mesh())),
-            Transform::IDENTITY.with_scale(Vec3::new(32.0, 32.0, 32.0)),
-            // .with_translation(Vec3::new(random(), random(), random())),
-            MeshMaterial3d(flat_materials.add(ExtendedMaterial {
-                base: StandardMaterial {
-                    opaque_render_method: OpaqueRendererMethod::Auto,
-                    ..Default::default()
-                },
-                extension: FlatNormalMaterial {},
-            })),
-        ));
-    }
-    commands.spawn(chunker);
+    // let chunks = chunker.get_chunks(Vec3::new(1.0, 1.0, 1.0).normalize());
+    // let geoms = chunker.build_geometries_for_chunks(chunks);
+    // for geom in geoms {
+    //     commands.spawn((
+    //         Wireframeable,
+    //         Mesh3d(meshes.add(geom.mesh())),
+    //         Transform::IDENTITY.with_scale(Vec3::new(32.0, 32.0, 32.0)),
+    //         // .with_translation(Vec3::new(random(), random(), random())),
+    //         MeshMaterial3d(flat_materials.add(ExtendedMaterial {
+    //             base: StandardMaterial {
+    //                 opaque_render_method: OpaqueRendererMethod::Auto,
+    //                 ..Default::default()
+    //             },
+    //             extension: FlatNormalMaterial {},
+    //         })),
+    //     ));
+    // }
+    // commands.spawn(chunker);
 }
