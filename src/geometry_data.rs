@@ -19,6 +19,8 @@ pub(crate) struct GeometryData {
     pub cells: Vec<Vec<usize>>,
     /// Stores cell neighbors
     pub cell_neighbors: Vec<BTreeSet<usize>>,
+    /// Stores the normals (and by extension cell positions)
+    pub cell_normals: Vec<Vec3>,
 }
 
 impl GeometryData {
@@ -84,6 +86,7 @@ impl GeometryData {
             }
         }
 
+        std::mem::swap(&mut self.cell_normals, &mut self.vertices);
         std::mem::swap(&mut self.vertices, &mut dual_vertices);
         std::mem::swap(&mut self.faces, &mut dual_faces);
         std::mem::swap(&mut self.cells, &mut dual_cells);
@@ -199,6 +202,7 @@ impl GeometryData {
             .map(|f| f.into_iter().collect())
             .collect();
         self.cell_neighbors = cell_neighbors;
+        self.cell_normals = self.cell_centroids();
         self
     }
 
@@ -269,12 +273,15 @@ impl GeometryData {
             cell_neighbors[face[2]].insert(face[0]);
         }
 
-        GeometryData {
+        let mut geo = GeometryData {
             vertices,
             faces,
             cells,
             cell_neighbors,
-        }
+            cell_normals: Vec::new(),
+        };
+        geo.cell_normals = geo.cell_centroids();
+        geo
     }
 
     // Returns the centroid of each cell
@@ -298,7 +305,7 @@ impl GeometryData {
     // Returns the normal for each vertex
     // assumes that vertex duplication has been done otherwise results are wierd
     pub(crate) fn flat_normals(&self) -> Vec<Vec3> {
-        let centroids = self.cell_centroids();
+        let centroids = &self.cell_normals;
         let mut normals = vec![Vec3::ZERO; self.vertices.len()];
         for (ci, cell) in self.cells.iter().enumerate() {
             let r = -0.1..0.1;
@@ -338,38 +345,38 @@ pub(crate) fn setup_demo_sphere(
     mut commands: Commands,
 ) {
     let geom = GeometryData::icosahedron()
-        .subdivide_n(7)
+        .subdivide_n(3)
         .slerp()
         .recell()
         .dual()
         .duplicate();
 
-    let indices = (0..(geom.cells.len())).collect();
+    // let indices = (0..(geom.cells.len())).collect();
 
-    let chunker = chunking::FloodfillChunker {
-        min_size: 50,
-        max_chunks: 12,
-    };
+    // let chunker = chunking::FloodfillChunker {
+    //     min_size: 50,
+    //     max_chunks: 12,
+    // };
 
-    let chunk = chunking::Chunk::build(indices, &geom, &chunker);
-    let d1 = chunk.depth(5);
-    let mut m: Vec<_> = d1.iter().map(|c| c.local_geometry(&geom).mesh()).collect();
+    // let chunk = chunking::Chunk::build(indices, &geom, &chunker);
+    // let d1 = chunk.depth(5);
+    // let mut m: Vec<_> = d1.iter().map(|c| c.local_geometry(&geom).mesh()).collect();
 
-    commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
+    // commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
 
-    for m in m {
-        commands.spawn((
-            Wireframeable,
-            Mesh3d(meshes.add(m)),
-            Transform::IDENTITY.with_scale(Vec3::new(16.0, 16.0, 16.0)),
-            // .with_translation(Vec3::new(random(), random(), random())),
-            MeshMaterial3d(flat_materials.add(ExtendedMaterial {
-                base: StandardMaterial {
-                    opaque_render_method: OpaqueRendererMethod::Auto,
-                    ..Default::default()
-                },
-                extension: FlatNormalMaterial {},
-            })),
-        ));
-    }
+    // for m in m {
+    commands.spawn((
+        Wireframeable,
+        Mesh3d(meshes.add(geom.mesh())),
+        Transform::IDENTITY.with_scale(Vec3::new(32.0, 32.0, 32.0)),
+        // .with_translation(Vec3::new(random(), random(), random())),
+        MeshMaterial3d(flat_materials.add(ExtendedMaterial {
+            base: StandardMaterial {
+                opaque_render_method: OpaqueRendererMethod::Auto,
+                ..Default::default()
+            },
+            extension: FlatNormalMaterial {},
+        })),
+    ));
+    // }
 }

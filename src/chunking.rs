@@ -141,6 +141,7 @@ impl Chunk {
         let mut chunk_faces = Vec::new();
         let mut chunk_cells = Vec::new();
         let mut cell_map = BTreeMap::new();
+        let mut chunk_cell_normals = Vec::new();
         for cell in cells {
             let faces = &geometry_data.cells[cell];
             let mut new_cell = Vec::new();
@@ -154,6 +155,7 @@ impl Chunk {
                 new_cell.push(chunk_faces.len() - 1);
             }
             chunk_cells.push(new_cell);
+            chunk_cell_normals.push(geometry_data.cell_normals[cell]);
             cell_map.insert(cell, chunk_cells.len() - 1);
         }
 
@@ -178,6 +180,7 @@ impl Chunk {
             faces: chunk_faces,
             cells: chunk_cells,
             cell_neighbors: chunk_cell_neighbors,
+            cell_normals: chunk_cell_normals,
         }
     }
 }

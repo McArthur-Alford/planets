@@ -16,24 +16,26 @@ struct Point {
 /// an octree that performs redistribution of ALL points into children
 /// when the capacity is met
 #[derive(Component, Debug)]
-pub(crate) struct OcTree {
-    children: Box<[Option<OcTree>; 8]>,
+pub(crate) struct Octree {
+    children: Box<[Option<Octree>; 8]>,
     center: Vec3,
     points: Option<Vec<Point>>,
     capacity: usize,
     bounds: f32,   // The distance to the edge of the octree from the center (half-width)
     height: usize, // The height of this node (distance from furthest leaf)
+    depth: usize,
 }
 
-impl OcTree {
-    fn new(capacity: usize, center: Vec3, bounds: f32) -> Self {
-        OcTree {
+impl Octree {
+    fn new(capacity: usize, center: Vec3, bounds: f32, depth: usize) -> Self {
+        Octree {
             children: Box::new([const { None }; 8]),
             center,
             points: Some(Vec::new()),
             capacity,
             bounds,
             height: 0,
+            depth,
         }
     }
 
@@ -53,27 +55,35 @@ impl OcTree {
     }
 
     fn insert(&mut self, point: Point) {
+        // Add points to self if points is some and within capacity
         if self.points.is_some() && self.points.as_ref().unwrap().len() <= self.capacity {
             self.points.as_mut().unwrap().push(point);
             return;
         }
 
+        // Otherwise (points is none or we exceed cap)
+        // Add to a child
         let index = self.pos_to_child(point.position);
         if self.children[index].is_none() {
             let center = self.center + (point.position - self.center).signum() * self.bounds / 2.0;
-            self.children[index] = Some(OcTree::new(self.capacity, center, self.bounds / 2.));
+            self.children[index] = Some(Octree::new(
+                self.capacity,
+                center,
+                self.bounds / 2.,
+                self.depth + 1,
+            ));
         }
-
         self.children[index].as_mut().map(|ot| ot.insert(point));
 
-        // If self.points is some but we got here, we redistribute them into children
+        // If self.points is some but we got here (over capacity), we redistribute them into children
         // and set it to none. Nice and easy!
-        // if let Some(points) = std::mem::take(&mut self.points) {
-        //     for point in points {
-        //         self.insert(point);
-        //     }
-        // }
-        // self.points = None;
+        if self.points.is_some() {
+            if let Some(points) = std::mem::take(&mut self.points) {
+                for point in points {
+                    self.insert(point);
+                }
+            }
+        }
 
         for child in self.children.iter() {
             if let Some(child) = child {
@@ -98,7 +108,7 @@ impl OcTree {
     }
 
     fn get_chunks(&self, target: Vec3) -> Vec<Vec<usize>> {
-        let multiplier = 0.1 * self.bounds; // 10% of the bound for each step
+        let multiplier = (1 / self.height) as f32 * self.bounds; // 1/max_depth steps
 
         let projected = target.clamp(
             self.center - Vec3::splat(self.bounds),
@@ -129,11 +139,11 @@ impl OcTree {
 }
 
 #[derive(Component)]
-pub(crate) struct OcTreeVisualiser;
+pub(crate) struct OctreeVisualiser;
 
 pub(crate) fn octree_visualiser(
-    octree_query: Query<&OcTree>,
-    visualiser_query: Query<Entity, With<OcTreeVisualiser>>,
+    octree_query: Query<&Octree>,
+    visualiser_query: Query<Entity, With<OctreeVisualiser>>,
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
@@ -166,20 +176,20 @@ pub(crate) fn octree_visualiser(
         Mesh3d(meshes.add(mesh)),
         Transform::default(),
         Wireframe,
-        OcTreeVisualiser,
+        OctreeVisualiser,
     ));
 }
 
-pub(crate) struct OcTreeDemoPlugin;
+pub(crate) struct OctreeDemoPlugin;
 
 pub(crate) fn octree_demo_startup(mut commands: Commands) {
-    let mut octree = OcTree::new(1, Vec3::ZERO, 50.0);
+    let mut octree = Octree::new(5, Vec3::ZERO, 50.0, 0);
 
     let vertices = GeometryData::icosahedron()
-        .subdivide_n(4)
+        .subdivide_n(3)
         .slerp()
         .recell()
-        .dual()
+        // .dual()
         .duplicate();
     for v in vertices.vertices {
         octree.insert(Point {
@@ -199,7 +209,7 @@ pub(crate) fn octree_demo_startup(mut commands: Commands) {
     ));
 }
 
-impl Plugin for OcTreeDemoPlugin {
+impl Plugin for OctreeDemoPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Startup,
