@@ -189,7 +189,7 @@ pub(crate) fn octree_demo_startup(mut commands: Commands) {
     let mut octree = Octree::new(5, Vec3::ZERO, 50.0, 0);
 
     let vertices = GeometryData::icosahedron()
-        .subdivide_n(3)
+        .subdivide_n(4)
         .slerp()
         .recell()
         // .dual()

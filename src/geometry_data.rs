@@ -346,7 +346,7 @@ pub(crate) fn setup_demo_sphere(
     mut commands: Commands,
 ) {
     let geom = GeometryData::icosahedron()
-        .subdivide_n(4)
+        .subdivide_n(6)
         .slerp()
         .recell()
         .dual()
