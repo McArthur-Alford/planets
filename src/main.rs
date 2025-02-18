@@ -17,6 +17,7 @@ use bevy::{
     },
 };
 use bevy_fps_counter::FpsCounterPlugin;
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use camera::CameraPlugin;
 use chunking::ChunkManagerDemoPlugin;
@@ -50,6 +51,7 @@ fn main() {
         .add_plugins(FlatNormalMaterialPlugin)
         .add_plugins((PanOrbitCameraPlugin, WireframePlugin))
         .add_plugins(FpsCounterPlugin)
+        // .add_plugins(WorldInspectorPlugin::new())
         // .add_plugins(OctreeVisualiserPlugin)
         .add_plugins(CameraPlugin)
         .add_plugins(ChunkManagerDemoPlugin)
