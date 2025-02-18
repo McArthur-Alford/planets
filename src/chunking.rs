@@ -1,7 +1,7 @@
 use bevy::pbr::{ExtendedMaterial, OpaqueRendererMethod};
 use bevy::prelude::*;
-use bevy::utils::HashMap;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Instant;
 
 use crate::camera::CameraTarget;
 use crate::flatnormal::FlatNormalMaterial;
@@ -18,7 +18,8 @@ pub enum ChunkAction {
 pub struct ChunkManager {
     pub geometry: GeometryData,
     pub octree: Octree,
-    pub active_chunks: HashMap<Vec<u8>, Entity>,
+    pub active_chunks: BTreeMap<Vec<u8>, Entity>,
+    pub mesh_handles: BTreeMap<Vec<u8>, Handle<Mesh>>,
     pub backlog: VecDeque<ChunkAction>,
     pub pov: Vec3,
 }
@@ -26,7 +27,7 @@ pub struct ChunkManager {
 impl ChunkManager {
     pub fn new(geometry: GeometryData) -> Self {
         // Example parameters
-        let capacity = 256;
+        let capacity = 32;
         let bounds = 1.0;
         let center = Vec3::ZERO;
         let mut octree = Octree::new(capacity, center, bounds, 0, vec![]);
@@ -42,7 +43,8 @@ impl ChunkManager {
         Self {
             geometry,
             octree,
-            active_chunks: HashMap::new(),
+            active_chunks: BTreeMap::new(),
+            mesh_handles: BTreeMap::new(),
             backlog: VecDeque::new(),
             pov: Vec3::ZERO,
         }
@@ -54,6 +56,7 @@ impl ChunkManager {
         if self.pov == new_pov {
             return;
         }
+        self.backlog.clear();
 
         self.pov = new_pov;
 
@@ -61,11 +64,11 @@ impl ChunkManager {
         let needed_indices = self.octree.get_chunk_indices(new_pov);
 
         // 2) Find which are new vs. which we already have.
-        let needed_set: HashMap<_, _> = needed_indices
+        let needed_set: BTreeMap<_, _> = needed_indices
             .iter()
             .map(|idx| (idx.clone(), true))
             .collect();
-        let current_set: HashMap<_, _> = self
+        let current_set: BTreeMap<_, _> = self
             .active_chunks
             .keys()
             .map(|idx| (idx.clone(), true))
@@ -93,31 +96,47 @@ impl ChunkManager {
         meshes: &mut Assets<Mesh>,
         mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
     ) {
-        for _ in 0..n {
+        let start = Instant::now();
+        let material = MeshMaterial3d(flat_materials.add(ExtendedMaterial {
+            base: StandardMaterial {
+                opaque_render_method: OpaqueRendererMethod::Auto,
+                ..Default::default()
+            },
+            extension: FlatNormalMaterial {},
+        }));
+        for i in 0..n {
+            if start.elapsed().as_millis() > 3 {
+                // println!("Processed {} before cutoff", i);
+                break;
+            }
             if let Some(action) = self.backlog.pop_front() {
                 match action {
                     ChunkAction::Create(index) => {
-                        if let Some(cells) = self.octree.get_cells_for_index(&index) {
-                            let chunk_geo = self.build_chunk_geometry(&cells);
-                            let mesh = meshes.add(chunk_geo.mesh());
+                        let handle = if self.mesh_handles.contains_key(&index) {
+                            self.mesh_handles.get(&index).unwrap()
+                        } else {
+                            if let Some(cells) = self.octree.get_cells_for_index(&index) {
+                                let chunk_geo = self.build_chunk_geometry(&cells);
+                                let handle = self
+                                    .mesh_handles
+                                    .entry(index.clone())
+                                    .or_insert_with(|| meshes.add(chunk_geo.mesh()));
+                                handle
+                            } else {
+                                continue;
+                            }
+                        };
 
-                            let e = commands
-                                .spawn((
-                                    Mesh3d(mesh),
-                                    Transform::from_scale(Vec3::splat(32.0)),
-                                    MeshMaterial3d(flat_materials.add(ExtendedMaterial {
-                                        base: StandardMaterial {
-                                            opaque_render_method: OpaqueRendererMethod::Auto,
-                                            ..Default::default()
-                                        },
-                                        extension: FlatNormalMaterial {},
-                                    })),
-                                    Name::new(format!("Chunk {:?}", index)),
-                                ))
-                                .id();
+                        let e = commands
+                            .spawn((
+                                Mesh3d(handle.clone()),
+                                material.clone(),
+                                Transform::from_scale(Vec3::splat(32.0)),
+                                Name::new(format!("Chunk {:?}", index)),
+                            ))
+                            .id();
 
-                            self.active_chunks.insert(index, e);
-                        }
+                        self.active_chunks.insert(index, e);
                     }
                     ChunkAction::Delete(index) => {
                         if let Some(entity) = self.active_chunks.remove(&index) {
@@ -181,11 +200,18 @@ impl ChunkManager {
 
 pub fn update_chunk_pov_system(
     mut query: Query<&mut ChunkManager>,
-    camera_query: Query<&Transform, With<Camera>>,
+    camera_query: Query<(&Transform, &Projection), With<Camera>>,
 ) {
-    if let Ok(camera_transform) = camera_query.get_single() {
+    if let Ok((camera_transform, projection)) = camera_query.get_single() {
         if let Ok(mut manager) = query.get_single_mut() {
-            manager.update_pov(camera_transform.translation.normalize());
+            let Projection::Perspective(projection) = projection else {
+                return;
+            };
+            dbg!(&projection.fov);
+            manager.update_pov(
+                camera_transform.translation.normalize()
+                    + camera_transform.translation.normalize() * projection.fov / 5.0,
+            );
         }
     }
 }
@@ -197,13 +223,13 @@ pub fn process_chunk_backlog_system(
     flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
 ) {
     if let Ok(mut manager) = query.get_single_mut() {
-        manager.process_backlog(32, &mut commands, &mut meshes, flat_materials);
+        manager.process_backlog(128, &mut commands, &mut meshes, flat_materials);
     }
 }
 
 pub fn setup_demo_chunk_manager(mut commands: Commands) {
     let geom = crate::geometry_data::GeometryData::icosahedron()
-        .subdivide_n(8)
+        .subdivide_n(9)
         .slerp()
         .recell()
         .dual()
