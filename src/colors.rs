@@ -15,7 +15,9 @@ use crate::{
 /// Represents a planets hex colours
 #[derive(Component, Default)]
 pub(crate) struct HexColors {
+    // The color of each cell
     pub(crate) colors: Vec<Color>,
+    // A list of indices into changed cells
     pub(crate) changed: Vec<usize>,
 }
 

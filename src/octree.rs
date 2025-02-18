@@ -128,7 +128,7 @@ impl Octree {
             self.center + Vec3::splat(self.bounds),
         );
 
-        let dist = projected.distance_squared(target).powf(1.0);
+        let dist = projected.distance(target);
         let mut desired_height = 0;
 
         while dist >= (desired_height as f32 + 0.1) * multiplier {
@@ -161,6 +161,10 @@ impl Octree {
         let mut desired_height = 0;
         while dist >= (desired_height as f32 + 0.1) * multiplier {
             desired_height += 1;
+        }
+
+        if dist > 0.9 {
+            return Vec::new();
         }
 
         let mut results = Vec::new();

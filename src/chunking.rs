@@ -4,7 +4,7 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{self, Duration, Instant};
 
 use crate::camera::CameraTarget;
 use crate::flatnormal::FlatNormalMaterial;
@@ -13,21 +13,22 @@ use crate::octree::{Octree, Point};
 
 type ChunkIndex = Vec<u8>;
 
-const NUM_WORKERS: usize = 1;
+const NUM_WORKERS: usize = 16;
 
+#[derive(Debug)]
 struct ChunkRequest {
     index: ChunkIndex,
 }
 
 struct ChunkResponse {
     index: ChunkIndex,
-    geometry: GeometryData,
+    geometry: Mesh,
 }
 
 #[derive(Debug)]
-pub enum ChunkAction {
-    Create(ChunkIndex),
-    Delete(ChunkIndex),
+pub enum ChunkState {
+    Active,
+    Inactive,
 }
 
 #[derive(Component)]
@@ -48,9 +49,8 @@ pub struct ChunkManager {
     /// The worker threads themselves
     pub workers: Vec<JoinHandle<()>>,
 
-    /// Chunks that should currently be active, all others should despawn
-    pub needed_indices: BTreeSet<ChunkIndex>,
-    pub actions: VecDeque<ChunkAction>,
+    /// Desired chunk states
+    pub active_chunks: BTreeSet<ChunkIndex>,
 }
 
 impl ChunkManager {
@@ -82,7 +82,7 @@ impl ChunkManager {
                         // 3) send back
                         let _ = response_sender.send(ChunkResponse {
                             index,
-                            geometry: local_geometry,
+                            geometry: local_geometry.mesh(),
                         });
                     }
                 }
@@ -95,7 +95,7 @@ impl ChunkManager {
     }
 
     pub fn new(geometry: GeometryData) -> Self {
-        let capacity = 32;
+        let capacity = 128;
         let bounds = 1.0;
         let center = Vec3::ZERO;
         let mut octree = Octree::new(capacity, center, bounds, 0, vec![]);
@@ -130,14 +130,14 @@ impl ChunkManager {
             sender: (request_sender, request_recv),
             receiver: (response_sender, response_recv),
             workers,
-            needed_indices: BTreeSet::new(),
             pov: Vec3::ZERO,
-            actions: VecDeque::new(),
+            active_chunks: BTreeSet::new(),
         }
     }
 
     /// If any worker threads have exited or panicked, re-spawn them
     pub fn check_and_respawn_workers(&mut self) {
+        let span = info_span!("check_andd_respawn", name = "check_and_respawn").entered();
         let mut still_alive = Vec::new();
         for handle in self.workers.drain(..) {
             if handle.is_finished() {
@@ -157,35 +157,26 @@ impl ChunkManager {
     }
 
     pub fn update_pov(&mut self, new_pov: Vec3) {
+        let span = info_span!("update_pov", name = "update_pov").entered();
         if self.pov == new_pov {
             return;
         }
         self.pov = new_pov;
-        // self.actions = VecDeque::new();
 
         // 1) Octree to find chunk indices near new POV
         let needed_indices = self.octree.get_chunk_indices(new_pov);
 
-        let old_needed = std::mem::replace(
-            &mut self.needed_indices,
-            needed_indices.iter().cloned().collect(),
-        );
-
         // Create requests for newly needed
-        for idx in self.needed_indices.difference(&old_needed) {
+        for idx in &needed_indices {
             // if we do not have a mesh handle for it and not requesting
             if !self.mesh_handles.contains_key(idx) && !self.active_requests.contains(idx) {
                 // Send request to worker threads
                 let _ = self.sender.0.send(ChunkRequest { index: idx.clone() });
                 self.active_requests.insert(idx.clone());
             }
-            self.actions.push_front(ChunkAction::Create(idx.clone()));
         }
 
-        // Delete old ones we no longer need
-        for idx in old_needed.difference(&self.needed_indices) {
-            self.actions.push_front(ChunkAction::Delete(idx.clone()));
-        }
+        self.active_chunks = needed_indices.iter().cloned().collect();
     }
 }
 
@@ -193,9 +184,15 @@ pub fn process_chunk_responses_system(
     mut query: Query<&mut ChunkManager>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
+    let span = info_span!("process_chunk_response_system").entered();
+    let time = Instant::now();
     if let Ok(mut manager) = query.get_single_mut() {
         while let Ok(resp) = manager.receiver.1.try_recv() {
-            let ChunkResponse { index, geometry } = resp;
+            let span = info_span!("response").entered();
+            let ChunkResponse {
+                index,
+                geometry: mesh,
+            } = resp;
 
             // Mark that we are no longer waiting
             manager.active_requests.remove(&index);
@@ -204,10 +201,14 @@ pub fn process_chunk_responses_system(
             }
 
             // Convert to mesh + cache
-            let new_handle = meshes.add(geometry.mesh());
+            let new_handle = meshes.add(mesh);
             manager
                 .mesh_handles
                 .insert(index.clone(), new_handle.clone());
+
+            if time.elapsed() > Duration::from_millis(1) {
+                break;
+            }
         }
     }
 }
@@ -215,6 +216,7 @@ pub fn process_chunk_responses_system(
 fn create_material(
     flat_materials: &mut ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
 ) -> MeshMaterial3d<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>> {
+    let span = info_span!("create_material", name = "create_material").entered();
     let extended_material = ExtendedMaterial {
         base: StandardMaterial {
             opaque_render_method: OpaqueRendererMethod::Auto,
@@ -249,35 +251,56 @@ pub fn process_chunk_backlog_system(
     let Ok(mut manager) = query.get_single_mut() else {
         return;
     };
+
     let material = create_material(&mut flat_materials);
-    let mut skipped = Vec::new();
-    while let Some(action) = manager.actions.pop_back() {
-        match action {
-            ChunkAction::Create(vec) => match manager.mesh_handles.get(&vec) {
-                Some(handle) => {
-                    if manager.mesh_entities.contains_key(&vec) {
-                        continue;
-                    }
-                    let entity = commands
-                        .spawn((
-                            Mesh3d(handle.clone()),
-                            material.clone(),
-                            Transform::from_scale(Vec3::splat(32.0)),
-                            Name::new(format!("Chunk {:?}", vec)),
-                        ))
-                        .id();
-                    manager.mesh_entities.insert(vec.clone(), entity);
-                }
-                None => skipped.push(ChunkAction::Create(vec)),
-            },
-            ChunkAction::Delete(vec) => match manager.mesh_entities.remove(&vec) {
-                Some(entity) => commands.entity(entity).despawn_recursive(),
-                None => continue,
-            },
+
+    let active_entities: BTreeSet<_> = manager.mesh_entities.keys().cloned().collect();
+
+    let ChunkManager {
+        mesh_entities,
+        active_chunks,
+        active_requests,
+        mesh_handles,
+        ..
+    } = &mut manager.into_inner();
+
+    let time = Instant::now();
+
+    for idx in active_entities.difference(&active_chunks) {
+        if active_requests.len() > 0 {
+            break;
+        }
+
+        let Some(entity) = mesh_entities.remove(idx) else {
+            continue;
+        };
+        commands.entity(entity).despawn_recursive();
+        if time.elapsed() > Duration::from_millis(1) {
+            break;
         }
     }
-    for skipped in skipped {
-        manager.actions.push_front(skipped);
+
+    for idx in active_chunks.difference(&active_entities) {
+        match mesh_handles.get(idx) {
+            Some(handle) => {
+                if mesh_entities.contains_key(idx) {
+                    continue;
+                }
+                let entity = commands
+                    .spawn((
+                        Mesh3d(handle.clone()),
+                        material.clone(),
+                        Transform::from_scale(Vec3::splat(32.0)),
+                        Name::new(format!("Chunk {:?}", idx)),
+                    ))
+                    .id();
+                mesh_entities.insert(idx.clone(), entity);
+            }
+            _ => {}
+        }
+        if time.elapsed() > Duration::from_millis(1) {
+            break;
+        }
     }
 }
 
