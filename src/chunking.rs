@@ -8,18 +8,20 @@ use crate::flatnormal::FlatNormalMaterial;
 use crate::geometry_data::GeometryData;
 use crate::octree::{Octree, Point};
 
+type ChunkIndex = Vec<u8>;
+
 #[derive(Debug)]
 pub enum ChunkAction {
-    Create(Vec<u8>),
-    Delete(Vec<u8>),
+    Create(ChunkIndex),
+    Delete(ChunkIndex),
 }
 
 #[derive(Component)]
 pub struct ChunkManager {
     pub geometry: GeometryData,
     pub octree: Octree,
-    pub active_chunks: BTreeMap<Vec<u8>, Entity>,
-    pub mesh_handles: BTreeMap<Vec<u8>, Handle<Mesh>>,
+    pub active_chunks: BTreeMap<ChunkIndex, Entity>,
+    pub mesh_handles: BTreeMap<ChunkIndex, Handle<Mesh>>,
     pub backlog: VecDeque<ChunkAction>,
     pub pov: Vec3,
 }
@@ -97,56 +99,81 @@ impl ChunkManager {
         mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
     ) {
         let start = Instant::now();
-        let material = MeshMaterial3d(flat_materials.add(ExtendedMaterial {
+
+        let material = self.create_material(&mut flat_materials);
+
+        for _ in 0..n {
+            if start.elapsed().as_millis() > 3 {
+                break;
+            }
+
+            let Some(action) = self.backlog.pop_front() else {
+                break;
+            };
+
+            match action {
+                ChunkAction::Create(index) => {
+                    self.handle_create_chunk(index, commands, meshes, &material)
+                }
+                ChunkAction::Delete(index) => {
+                    self.handle_delete_chunk(index, commands);
+                }
+            }
+        }
+    }
+
+    fn create_material(
+        &self,
+        flat_materials: &mut ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+    ) -> MeshMaterial3d<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>> {
+        let extended_material = ExtendedMaterial {
             base: StandardMaterial {
                 opaque_render_method: OpaqueRendererMethod::Auto,
                 ..Default::default()
             },
             extension: FlatNormalMaterial {},
-        }));
-        for i in 0..n {
-            if start.elapsed().as_millis() > 3 {
-                // println!("Processed {} before cutoff", i);
-                break;
-            }
-            if let Some(action) = self.backlog.pop_front() {
-                match action {
-                    ChunkAction::Create(index) => {
-                        let handle = if self.mesh_handles.contains_key(&index) {
-                            self.mesh_handles.get(&index).unwrap()
-                        } else {
-                            if let Some(cells) = self.octree.get_cells_for_index(&index) {
-                                let chunk_geo = self.build_chunk_geometry(&cells);
-                                let handle = self
-                                    .mesh_handles
-                                    .entry(index.clone())
-                                    .or_insert_with(|| meshes.add(chunk_geo.mesh()));
-                                handle
-                            } else {
-                                continue;
-                            }
-                        };
+        };
+        MeshMaterial3d(flat_materials.add(extended_material))
+    }
 
-                        let e = commands
-                            .spawn((
-                                Mesh3d(handle.clone()),
-                                material.clone(),
-                                Transform::from_scale(Vec3::splat(32.0)),
-                                Name::new(format!("Chunk {:?}", index)),
-                            ))
-                            .id();
-
-                        self.active_chunks.insert(index, e);
-                    }
-                    ChunkAction::Delete(index) => {
-                        if let Some(entity) = self.active_chunks.remove(&index) {
-                            commands.entity(entity).despawn_recursive();
-                        }
-                    }
-                }
-            } else {
-                break;
+    fn handle_create_chunk(
+        &mut self,
+        index: ChunkIndex,
+        commands: &mut Commands,
+        meshes: &mut Assets<Mesh>,
+        material: &MeshMaterial3d<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>,
+    ) {
+        let handle = match self.mesh_handles.get(&index) {
+            Some(handle) => handle.clone(),
+            None => {
+                let cells = match self.octree.get_cells_for_index(&index) {
+                    Some(c) => c,
+                    None => return,
+                };
+                let chunk_geo = self.build_chunk_geometry(&cells);
+                let new_handle = meshes.add(chunk_geo.mesh());
+                self.mesh_handles
+                    .entry(index.clone())
+                    .or_insert(new_handle)
+                    .clone()
             }
+        };
+
+        let entity = commands
+            .spawn((
+                Mesh3d(handle),
+                material.clone(),
+                Transform::from_scale(Vec3::splat(32.0)),
+                Name::new(format!("Chunk {:?}", index)),
+            ))
+            .id();
+
+        self.active_chunks.insert(index, entity);
+    }
+
+    fn handle_delete_chunk(&mut self, index: ChunkIndex, commands: &mut Commands) {
+        if let Some(entity) = self.active_chunks.remove(&index) {
+            commands.entity(entity).despawn_recursive();
         }
     }
 
@@ -223,6 +250,9 @@ pub fn process_chunk_backlog_system(
     flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
 ) {
     if let Ok(mut manager) = query.get_single_mut() {
+        // TODO
+        // In the future, we could probably find a way to make this run in a worker
+        // and send back chunks on a channel to the chunkmanager which simply spawns them as it gets them
         manager.process_backlog(128, &mut commands, &mut meshes, flat_materials);
     }
 }
