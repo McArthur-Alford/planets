@@ -338,6 +338,51 @@ impl GeometryData {
         )
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.flat_normals())
     }
+
+    pub(crate) fn sub_geometry(&self, cells: &[usize]) -> Self {
+        let mut chunk_vertices = Vec::new();
+        let mut chunk_faces = Vec::new();
+        let mut chunk_cells = Vec::new();
+        let mut chunk_cell_normals = Vec::new();
+        let mut cell_map = BTreeMap::new();
+
+        for &cell_id in cells {
+            let face_indices = &self.cells[cell_id];
+            let mut new_cell_faces = Vec::new();
+
+            for &face_idx in face_indices {
+                let face = self.faces[face_idx];
+                for &vert_idx in &face {
+                    chunk_vertices.push(self.vertices[vert_idx]);
+                }
+                let start = chunk_vertices.len() - 3;
+                chunk_faces.push([start, start + 1, start + 2]);
+                new_cell_faces.push(chunk_faces.len() - 1);
+            }
+
+            chunk_cells.push(new_cell_faces);
+            chunk_cell_normals.push(self.cell_normals[cell_id]);
+            cell_map.insert(cell_id, chunk_cells.len() - 1);
+        }
+
+        let mut chunk_cell_neighbors = vec![BTreeSet::new(); chunk_cells.len()];
+        for (&global_cell, &local_cell) in &cell_map {
+            for &neighbor in &self.cell_neighbors[global_cell] {
+                if let Some(&local_neighbor) = cell_map.get(&neighbor) {
+                    chunk_cell_neighbors[local_cell].insert(local_neighbor);
+                    chunk_cell_neighbors[local_neighbor].insert(local_cell);
+                }
+            }
+        }
+
+        GeometryData {
+            vertices: chunk_vertices,
+            faces: chunk_faces,
+            cells: chunk_cells,
+            cell_neighbors: chunk_cell_neighbors,
+            cell_normals: chunk_cell_normals,
+        }
+    }
 }
 
 pub(crate) fn setup_demo_sphere(

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bevy::{math::NormedVectorSpace, pbr::wireframe::Wireframe, prelude::*};
 use bevy_panorbit_camera::PanOrbitCamera;
 use rand::random;
@@ -126,7 +128,7 @@ impl Octree {
             self.center + Vec3::splat(self.bounds),
         );
 
-        let dist = projected.distance_squared(target).exp2();
+        let dist = projected.distance_squared(target).powf(1.0);
         let mut desired_height = 0;
 
         while dist >= (desired_height as f32 + 0.1) * multiplier {
@@ -218,7 +220,7 @@ pub(crate) fn octree_visualiser(
         );
         for child in qt.children.iter() {
             if let Some(child) = child {
-                qts.push(child.clone());
+                qts.push(Arc::new(child.clone()));
             }
         }
     }

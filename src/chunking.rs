@@ -1,7 +1,10 @@
 use bevy::pbr::{ExtendedMaterial, OpaqueRendererMethod};
 use bevy::prelude::*;
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::time::Instant;
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::camera::CameraTarget;
 use crate::flatnormal::FlatNormalMaterial;
@@ -9,6 +12,17 @@ use crate::geometry_data::GeometryData;
 use crate::octree::{Octree, Point};
 
 type ChunkIndex = Vec<u8>;
+
+const NUM_WORKERS: usize = 1;
+
+struct ChunkRequest {
+    index: ChunkIndex,
+}
+
+struct ChunkResponse {
+    index: ChunkIndex,
+    geometry: GeometryData,
+}
 
 #[derive(Debug)]
 pub enum ChunkAction {
@@ -18,23 +32,74 @@ pub enum ChunkAction {
 
 #[derive(Component)]
 pub struct ChunkManager {
-    pub geometry: GeometryData,
-    pub octree: Octree,
-    pub active_chunks: BTreeMap<ChunkIndex, Entity>,
+    pub geometry: Arc<GeometryData>,
+    pub octree: Arc<Octree>,
     pub mesh_handles: BTreeMap<ChunkIndex, Handle<Mesh>>,
-    pub backlog: VecDeque<ChunkAction>,
+    pub mesh_entities: BTreeMap<ChunkIndex, Entity>,
     pub pov: Vec3,
+
+    /// Indices for which we have requested geometry and not yet received a response.
+    pub active_requests: BTreeSet<ChunkIndex>,
+
+    /// Communication channels
+    pub sender: (Sender<ChunkRequest>, Receiver<ChunkRequest>),
+    pub receiver: (Sender<ChunkResponse>, Receiver<ChunkResponse>),
+
+    /// The worker threads themselves
+    pub workers: Vec<JoinHandle<()>>,
+
+    /// Chunks that should currently be active, all others should despawn
+    pub needed_indices: BTreeSet<ChunkIndex>,
+    pub actions: VecDeque<ChunkAction>,
 }
 
 impl ChunkManager {
+    fn spawn_workers(
+        sender: &Receiver<ChunkRequest>,
+        responder: &Sender<ChunkResponse>,
+        octree: Arc<Octree>,
+        geometry: Arc<GeometryData>,
+        n: usize,
+    ) -> Vec<JoinHandle<()>> {
+        let mut handles = Vec::new();
+
+        for _ in 0..n {
+            let request_receiver = sender.clone();
+            let response_sender = responder.clone();
+
+            let geometry = geometry.clone();
+            let octree = octree.clone();
+            let handle = thread::spawn(move || {
+                while let Ok(msg) = request_receiver.recv() {
+                    let ChunkRequest { index } = msg;
+
+                    // Build chunk geometry
+                    // 1) get which cells belong to that chunk
+                    if let Some(cells) = octree.get_cells_for_index(&index) {
+                        // 2) build geometry data
+                        let local_geometry = geometry.sub_geometry(&cells);
+
+                        // 3) send back
+                        let _ = response_sender.send(ChunkResponse {
+                            index,
+                            geometry: local_geometry,
+                        });
+                    }
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        handles
+    }
+
     pub fn new(geometry: GeometryData) -> Self {
-        // Example parameters
         let capacity = 32;
         let bounds = 1.0;
         let center = Vec3::ZERO;
         let mut octree = Octree::new(capacity, center, bounds, 0, vec![]);
 
-        // Insert each cell
         for (cell_index, &position) in geometry.cell_normals.iter().enumerate() {
             octree.insert(Point {
                 position,
@@ -42,203 +107,136 @@ impl ChunkManager {
             });
         }
 
+        let geometry = Arc::new(geometry);
+        let octree = Arc::new(octree);
+
+        let (request_sender, request_recv) = unbounded::<ChunkRequest>();
+        let (response_sender, response_recv) = unbounded::<ChunkResponse>();
+
+        let workers = Self::spawn_workers(
+            &request_recv,
+            &response_sender,
+            octree.clone(),
+            geometry.clone(),
+            NUM_WORKERS,
+        );
+
         Self {
             geometry,
             octree,
-            active_chunks: BTreeMap::new(),
+            mesh_entities: BTreeMap::new(),
             mesh_handles: BTreeMap::new(),
-            backlog: VecDeque::new(),
+            active_requests: BTreeSet::new(),
+            sender: (request_sender, request_recv),
+            receiver: (response_sender, response_recv),
+            workers,
+            needed_indices: BTreeSet::new(),
             pov: Vec3::ZERO,
+            actions: VecDeque::new(),
         }
     }
 
-    /// When POV changes, figure out which chunks should exist, queue up
-    /// creation for newly needed chunks, and queue deletion for chunks no longer needed.
+    /// If any worker threads have exited or panicked, re-spawn them
+    pub fn check_and_respawn_workers(&mut self) {
+        let mut still_alive = Vec::new();
+        for handle in self.workers.drain(..) {
+            if handle.is_finished() {
+                let _ = handle.join();
+                still_alive.extend(Self::spawn_workers(
+                    &self.sender.1,
+                    &self.receiver.0,
+                    self.octree.clone(),
+                    self.geometry.clone(),
+                    1,
+                ));
+            } else {
+                still_alive.push(handle);
+            }
+        }
+        self.workers = still_alive;
+    }
+
     pub fn update_pov(&mut self, new_pov: Vec3) {
         if self.pov == new_pov {
             return;
         }
-        self.backlog.clear();
-
         self.pov = new_pov;
+        // self.actions = VecDeque::new();
 
-        // 1) Query the octree for the correct chunk indices near POV
+        // 1) Octree to find chunk indices near new POV
         let needed_indices = self.octree.get_chunk_indices(new_pov);
 
-        // 2) Find which are new vs. which we already have.
-        let needed_set: BTreeMap<_, _> = needed_indices
-            .iter()
-            .map(|idx| (idx.clone(), true))
-            .collect();
-        let current_set: BTreeMap<_, _> = self
-            .active_chunks
-            .keys()
-            .map(|idx| (idx.clone(), true))
-            .collect();
+        let old_needed = std::mem::replace(
+            &mut self.needed_indices,
+            needed_indices.iter().cloned().collect(),
+        );
 
-        // For every needed index that we do NOT have, queue creation
-        for idx in needed_indices {
-            if !current_set.contains_key(&idx) {
-                self.backlog.push_back(ChunkAction::Create(idx));
+        // Create requests for newly needed
+        for idx in self.needed_indices.difference(&old_needed) {
+            // if we do not have a mesh handle for it and not requesting
+            if !self.mesh_handles.contains_key(idx) && !self.active_requests.contains(idx) {
+                // Send request to worker threads
+                let _ = self.sender.0.send(ChunkRequest { index: idx.clone() });
+                self.active_requests.insert(idx.clone());
             }
+            self.actions.push_front(ChunkAction::Create(idx.clone()));
         }
 
-        // For every currently active index that is NOT needed, queue deletion
-        for idx in self.active_chunks.keys() {
-            if !needed_set.contains_key(idx) {
-                self.backlog.push_back(ChunkAction::Delete(idx.clone()));
-            }
-        }
-    }
-
-    pub fn process_backlog(
-        &mut self,
-        n: usize,
-        commands: &mut Commands,
-        meshes: &mut Assets<Mesh>,
-        mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
-    ) {
-        let start = Instant::now();
-
-        let material = self.create_material(&mut flat_materials);
-
-        for _ in 0..n {
-            if start.elapsed().as_millis() > 3 {
-                break;
-            }
-
-            let Some(action) = self.backlog.pop_front() else {
-                break;
-            };
-
-            match action {
-                ChunkAction::Create(index) => {
-                    self.handle_create_chunk(index, commands, meshes, &material)
-                }
-                ChunkAction::Delete(index) => {
-                    self.handle_delete_chunk(index, commands);
-                }
-            }
-        }
-    }
-
-    fn create_material(
-        &self,
-        flat_materials: &mut ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
-    ) -> MeshMaterial3d<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>> {
-        let extended_material = ExtendedMaterial {
-            base: StandardMaterial {
-                opaque_render_method: OpaqueRendererMethod::Auto,
-                ..Default::default()
-            },
-            extension: FlatNormalMaterial {},
-        };
-        MeshMaterial3d(flat_materials.add(extended_material))
-    }
-
-    fn handle_create_chunk(
-        &mut self,
-        index: ChunkIndex,
-        commands: &mut Commands,
-        meshes: &mut Assets<Mesh>,
-        material: &MeshMaterial3d<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>,
-    ) {
-        let handle = match self.mesh_handles.get(&index) {
-            Some(handle) => handle.clone(),
-            None => {
-                let cells = match self.octree.get_cells_for_index(&index) {
-                    Some(c) => c,
-                    None => return,
-                };
-                let chunk_geo = self.build_chunk_geometry(&cells);
-                let new_handle = meshes.add(chunk_geo.mesh());
-                self.mesh_handles
-                    .entry(index.clone())
-                    .or_insert(new_handle)
-                    .clone()
-            }
-        };
-
-        let entity = commands
-            .spawn((
-                Mesh3d(handle),
-                material.clone(),
-                Transform::from_scale(Vec3::splat(32.0)),
-                Name::new(format!("Chunk {:?}", index)),
-            ))
-            .id();
-
-        self.active_chunks.insert(index, entity);
-    }
-
-    fn handle_delete_chunk(&mut self, index: ChunkIndex, commands: &mut Commands) {
-        if let Some(entity) = self.active_chunks.remove(&index) {
-            commands.entity(entity).despawn_recursive();
-        }
-    }
-
-    pub fn build_chunk_geometry(&self, cells: &[usize]) -> GeometryData {
-        let mut chunk_vertices = Vec::new();
-        let mut chunk_faces = Vec::new();
-        let mut chunk_cells = Vec::new();
-        let mut chunk_cell_normals = Vec::new();
-
-        let mut cell_map = BTreeMap::new();
-
-        for &cell in cells {
-            let face_indices = &self.geometry.cells[cell];
-            let mut new_cell_faces = Vec::new();
-
-            for &face_idx in face_indices {
-                let face = self.geometry.faces[face_idx];
-
-                for &vert_idx in &face {
-                    chunk_vertices.push(self.geometry.vertices[vert_idx]);
-                }
-                let start = chunk_vertices.len() - 3;
-                chunk_faces.push([start, start + 1, start + 2]);
-                new_cell_faces.push(chunk_faces.len() - 1);
-            }
-
-            chunk_cells.push(new_cell_faces);
-            chunk_cell_normals.push(self.geometry.cell_normals[cell]);
-            cell_map.insert(cell, chunk_cells.len() - 1);
-        }
-
-        let mut chunk_cell_neighbors = vec![BTreeSet::new(); chunk_cells.len()];
-        for (&global_cell, &local_cell) in &cell_map {
-            for &neighbor in &self.geometry.cell_neighbors[global_cell] {
-                if let Some(&local_neighbor) = cell_map.get(&neighbor) {
-                    chunk_cell_neighbors[local_cell].insert(local_neighbor);
-                    chunk_cell_neighbors[local_neighbor].insert(local_cell);
-                }
-            }
-        }
-
-        GeometryData {
-            vertices: chunk_vertices,
-            faces: chunk_faces,
-            cells: chunk_cells,
-            cell_neighbors: chunk_cell_neighbors,
-            cell_normals: chunk_cell_normals,
+        // Delete old ones we no longer need
+        for idx in old_needed.difference(&self.needed_indices) {
+            self.actions.push_front(ChunkAction::Delete(idx.clone()));
         }
     }
 }
 
-pub fn update_chunk_pov_system(
+pub fn process_chunk_responses_system(
+    mut query: Query<&mut ChunkManager>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    if let Ok(mut manager) = query.get_single_mut() {
+        while let Ok(resp) = manager.receiver.1.try_recv() {
+            let ChunkResponse { index, geometry } = resp;
+
+            // Mark that we are no longer waiting
+            manager.active_requests.remove(&index);
+            if manager.mesh_handles.contains_key(&index) {
+                continue;
+            }
+
+            // Convert to mesh + cache
+            let new_handle = meshes.add(geometry.mesh());
+            manager
+                .mesh_handles
+                .insert(index.clone(), new_handle.clone());
+        }
+    }
+}
+
+fn create_material(
+    flat_materials: &mut ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+) -> MeshMaterial3d<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>> {
+    let extended_material = ExtendedMaterial {
+        base: StandardMaterial {
+            opaque_render_method: OpaqueRendererMethod::Auto,
+            ..Default::default()
+        },
+        extension: FlatNormalMaterial {},
+    };
+    MeshMaterial3d(flat_materials.add(extended_material))
+}
+
+pub(crate) fn update_chunk_pov_system(
     mut query: Query<&mut ChunkManager>,
     camera_query: Query<(&Transform, &Projection), With<Camera>>,
 ) {
     if let Ok((camera_transform, projection)) = camera_query.get_single() {
         if let Ok(mut manager) = query.get_single_mut() {
-            let Projection::Perspective(projection) = projection else {
-                return;
-            };
-            dbg!(&projection.fov);
-            manager.update_pov(
-                camera_transform.translation.normalize()
-                    + camera_transform.translation.normalize() * projection.fov / 5.0,
-            );
+            if let Projection::Perspective(projection) = projection {
+                manager.update_pov(
+                    camera_transform.translation.normalize()
+                        + camera_transform.translation.normalize() * projection.fov / 5.0,
+                );
+            }
         }
     }
 }
@@ -246,14 +244,46 @@ pub fn update_chunk_pov_system(
 pub fn process_chunk_backlog_system(
     mut commands: Commands,
     mut query: Query<&mut ChunkManager>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
 ) {
+    let Ok(mut manager) = query.get_single_mut() else {
+        return;
+    };
+    let material = create_material(&mut flat_materials);
+    let mut skipped = Vec::new();
+    while let Some(action) = manager.actions.pop_back() {
+        match action {
+            ChunkAction::Create(vec) => match manager.mesh_handles.get(&vec) {
+                Some(handle) => {
+                    if manager.mesh_entities.contains_key(&vec) {
+                        continue;
+                    }
+                    let entity = commands
+                        .spawn((
+                            Mesh3d(handle.clone()),
+                            material.clone(),
+                            Transform::from_scale(Vec3::splat(32.0)),
+                            Name::new(format!("Chunk {:?}", vec)),
+                        ))
+                        .id();
+                    manager.mesh_entities.insert(vec.clone(), entity);
+                }
+                None => skipped.push(ChunkAction::Create(vec)),
+            },
+            ChunkAction::Delete(vec) => match manager.mesh_entities.remove(&vec) {
+                Some(entity) => commands.entity(entity).despawn_recursive(),
+                None => continue,
+            },
+        }
+    }
+    for skipped in skipped {
+        manager.actions.push_front(skipped);
+    }
+}
+
+pub fn check_workers_system(mut query: Query<&mut ChunkManager>) {
     if let Ok(mut manager) = query.get_single_mut() {
-        // TODO
-        // In the future, we could probably find a way to make this run in a worker
-        // and send back chunks on a channel to the chunkmanager which simply spawns them as it gets them
-        manager.process_backlog(128, &mut commands, &mut meshes, flat_materials);
+        manager.check_and_respawn_workers();
     }
 }
 
@@ -267,7 +297,7 @@ pub fn setup_demo_chunk_manager(mut commands: Commands) {
 
     let manager = ChunkManager::new(geom);
 
-    commands.spawn((manager, Name::new("Planet ChunkManager")));
+    commands.spawn((manager, Name::new("ChunkManager")));
     commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
 }
 
@@ -277,7 +307,12 @@ impl Plugin for ChunkManagerDemoPlugin {
         app.add_systems(Startup, setup_demo_chunk_manager)
             .add_systems(
                 FixedUpdate,
-                (update_chunk_pov_system, process_chunk_backlog_system),
+                (
+                    update_chunk_pov_system,
+                    process_chunk_responses_system,
+                    process_chunk_backlog_system,
+                    check_workers_system,
+                ),
             );
     }
 }
