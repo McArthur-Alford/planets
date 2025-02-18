@@ -1,4 +1,3 @@
-use crate::fibonacci_sphere;
 use crate::Wireframeable;
 use bevy::prelude::*;
 
@@ -11,14 +10,14 @@ struct Point {
     end: Vec3,
 }
 
-pub(crate) fn more_balls(mut fib: ResMut<FibonacciConfig>) {
+pub(crate) fn more_balls(fib: ResMut<FibonacciConfig>) {
     // fib.0 += 1;
     // let i = fib.0 as u32;
     // fib.1 = fibonacci_sphere(i)
 }
 
 pub(crate) fn move_balls(mut points: Query<(&mut Point, &mut Transform)>) {
-    for (mut point, mut transform) in points.iter_mut() {
+    for (point, mut transform) in points.iter_mut() {
         let start = transform.translation;
         let end = point.end;
         let mut dir = end - start;

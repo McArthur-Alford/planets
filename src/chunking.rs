@@ -4,7 +4,7 @@ use crossbeam::channel::{unbounded, Receiver, Sender};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{self, Duration, Instant};
+use std::time::{Duration, Instant};
 
 use crate::camera::CameraTarget;
 use crate::flatnormal::FlatNormalMaterial;
@@ -22,7 +22,8 @@ struct ChunkRequest {
 
 struct ChunkResponse {
     index: ChunkIndex,
-    geometry: Mesh,
+    cells: Vec<usize>,
+    mesh: Mesh,
 }
 
 #[derive(Debug)]
@@ -36,6 +37,7 @@ pub struct ChunkManager {
     pub geometry: Arc<GeometryData>,
     pub octree: Arc<Octree>,
     pub mesh_handles: BTreeMap<ChunkIndex, Handle<Mesh>>,
+    pub mesh_handle_unload_times: BTreeMap<ChunkIndex, Instant>,
     pub mesh_entities: BTreeMap<ChunkIndex, Entity>,
     pub pov: Vec3,
 
@@ -51,9 +53,30 @@ pub struct ChunkManager {
 
     /// Desired chunk states
     pub active_chunks: BTreeSet<ChunkIndex>,
+
+    pub cells: BTreeMap<ChunkIndex, Vec<usize>>,
 }
 
 impl ChunkManager {
+    fn print_self(&self) {
+        println!("CHUNK MANAGER");
+        // println!("geometry: {}", (&self.geometry).len());
+        println!("octree: {}", &self.octree.height);
+        println!("mesh_handles: {}", &self.mesh_handles.len());
+        println!(
+            "mesh_handle_unload_times: {}",
+            &self.mesh_handle_unload_times.len()
+        );
+        println!("mesh_entities: {}", &self.mesh_entities.len());
+        // println!("pov: {}", &self.pov.len());
+        println!("active_requests: {}", &self.active_requests.len());
+        // println!("sender: {}", &self.sender.len());
+        // println!("receiver: {}", &self.receiver.len());
+        println!("workers: {}", &self.workers.len());
+        println!("active_chunks: {}", &self.active_chunks.len());
+        println!("cells: {}", &self.cells.len());
+    }
+
     fn spawn_workers(
         sender: &Receiver<ChunkRequest>,
         responder: &Sender<ChunkResponse>,
@@ -82,7 +105,8 @@ impl ChunkManager {
                         // 3) send back
                         let _ = response_sender.send(ChunkResponse {
                             index,
-                            geometry: local_geometry.mesh(),
+                            mesh: local_geometry.mesh(),
+                            cells,
                         });
                     }
                 }
@@ -126,12 +150,14 @@ impl ChunkManager {
             octree,
             mesh_entities: BTreeMap::new(),
             mesh_handles: BTreeMap::new(),
+            mesh_handle_unload_times: BTreeMap::new(),
             active_requests: BTreeSet::new(),
             sender: (request_sender, request_recv),
             receiver: (response_sender, response_recv),
             workers,
             pov: Vec3::ZERO,
             active_chunks: BTreeSet::new(),
+            cells: BTreeMap::new(),
         }
     }
 
@@ -176,29 +202,55 @@ impl ChunkManager {
             }
         }
 
-        self.active_chunks = needed_indices.iter().cloned().collect();
+        let new_active_chunks = needed_indices.iter().cloned().collect();
+        for (missing) in self.active_chunks.difference(&new_active_chunks) {
+            if self.mesh_handles.contains_key(missing) {
+                self.mesh_handle_unload_times
+                    .insert(missing.clone(), Instant::now());
+            }
+        }
+        self.active_chunks = new_active_chunks;
+    }
+}
+
+pub fn cleanup_old_handles(mut query: Query<&mut ChunkManager>) {
+    let Ok(mut manager) = query.get_single_mut() else {
+        return;
+    };
+    println!("\n\n");
+    manager.print_self();
+
+    let mut removals = Vec::new();
+    for (index, time) in &manager.mesh_handle_unload_times {
+        if time.elapsed() > Duration::from_secs(10) {
+            removals.push(index.clone());
+        }
+    }
+    for removal in removals {
+        manager.mesh_handles.remove(&removal);
+        manager.mesh_handle_unload_times.remove(&removal);
     }
 }
 
 pub fn process_chunk_responses_system(
     mut query: Query<&mut ChunkManager>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
 ) {
     let span = info_span!("process_chunk_response_system").entered();
     let time = Instant::now();
     if let Ok(mut manager) = query.get_single_mut() {
         while let Ok(resp) = manager.receiver.1.try_recv() {
             let span = info_span!("response").entered();
-            let ChunkResponse {
-                index,
-                geometry: mesh,
-            } = resp;
+            let ChunkResponse { index, cells, mesh } = resp;
 
             // Mark that we are no longer waiting
             manager.active_requests.remove(&index);
             if manager.mesh_handles.contains_key(&index) {
                 continue;
             }
+
+            manager.cells.insert(index.clone(), cells);
 
             // Convert to mesh + cache
             let new_handle = meshes.add(mesh);
@@ -215,7 +267,7 @@ pub fn process_chunk_responses_system(
 
 fn create_material(
     flat_materials: &mut ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
-) -> MeshMaterial3d<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>> {
+) -> Handle<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>> {
     let span = info_span!("create_material", name = "create_material").entered();
     let extended_material = ExtendedMaterial {
         base: StandardMaterial {
@@ -224,8 +276,11 @@ fn create_material(
         },
         extension: FlatNormalMaterial {},
     };
-    MeshMaterial3d(flat_materials.add(extended_material))
+    flat_materials.add(extended_material)
 }
+
+#[derive(Resource)]
+pub struct HexsphereMaterial(Handle<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>);
 
 pub(crate) fn update_chunk_pov_system(
     mut query: Query<&mut ChunkManager>,
@@ -246,13 +301,11 @@ pub(crate) fn update_chunk_pov_system(
 pub fn process_chunk_backlog_system(
     mut commands: Commands,
     mut query: Query<&mut ChunkManager>,
-    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+    material: Res<HexsphereMaterial>,
 ) {
-    let Ok(mut manager) = query.get_single_mut() else {
+    let Ok(manager) = query.get_single_mut() else {
         return;
     };
-
-    let material = create_material(&mut flat_materials);
 
     let active_entities: BTreeSet<_> = manager.mesh_entities.keys().cloned().collect();
 
@@ -266,8 +319,8 @@ pub fn process_chunk_backlog_system(
 
     let time = Instant::now();
 
-    for idx in active_entities.difference(&active_chunks) {
-        if active_requests.len() > 0 {
+    for idx in active_entities.difference(active_chunks) {
+        if !active_requests.is_empty() {
             break;
         }
 
@@ -281,22 +334,19 @@ pub fn process_chunk_backlog_system(
     }
 
     for idx in active_chunks.difference(&active_entities) {
-        match mesh_handles.get(idx) {
-            Some(handle) => {
-                if mesh_entities.contains_key(idx) {
-                    continue;
-                }
-                let entity = commands
-                    .spawn((
-                        Mesh3d(handle.clone()),
-                        material.clone(),
-                        Transform::from_scale(Vec3::splat(32.0)),
-                        Name::new(format!("Chunk {:?}", idx)),
-                    ))
-                    .id();
-                mesh_entities.insert(idx.clone(), entity);
+        if let Some(handle) = mesh_handles.get(idx) {
+            if mesh_entities.contains_key(idx) {
+                continue;
             }
-            _ => {}
+            let entity = commands
+                .spawn((
+                    Mesh3d(handle.clone()),
+                    MeshMaterial3d(material.0.clone()),
+                    Transform::from_scale(Vec3::splat(32.0)),
+                    Name::new(format!("Chunk {:?}", idx)),
+                ))
+                .id();
+            mesh_entities.insert(idx.clone(), entity);
         }
         if time.elapsed() > Duration::from_millis(1) {
             break;
@@ -310,7 +360,10 @@ pub fn check_workers_system(mut query: Query<&mut ChunkManager>) {
     }
 }
 
-pub fn setup_demo_chunk_manager(mut commands: Commands) {
+pub fn setup_demo_chunk_manager(
+    mut commands: Commands,
+    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+) {
     let geom = crate::geometry_data::GeometryData::icosahedron()
         .subdivide_n(9)
         .slerp()
@@ -322,6 +375,9 @@ pub fn setup_demo_chunk_manager(mut commands: Commands) {
 
     commands.spawn((manager, Name::new("ChunkManager")));
     commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
+
+    let material = create_material(&mut flat_materials);
+    commands.insert_resource(HexsphereMaterial(material));
 }
 
 pub struct ChunkManagerDemoPlugin;
@@ -335,6 +391,7 @@ impl Plugin for ChunkManagerDemoPlugin {
                     process_chunk_responses_system,
                     process_chunk_backlog_system,
                     check_workers_system,
+                    cleanup_old_handles,
                 ),
             );
     }

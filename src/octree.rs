@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use bevy::{math::NormedVectorSpace, pbr::wireframe::Wireframe, prelude::*};
 use bevy_panorbit_camera::PanOrbitCamera;
-use rand::random;
 
-use crate::{chunking::ChunkManager, geometry_data::GeometryData};
+use crate::chunking::ChunkManager;
 
 // The plan:
 // Break space up into cubic chunks, each containing cells.
@@ -45,7 +44,7 @@ impl Octree {
             bounds,
             height: 0,
             depth,
-            octree_index: octree_index,
+            octree_index,
         }
     }
 
@@ -64,7 +63,7 @@ impl Octree {
         index as usize
     }
 
-    pub(crate) fn insert(&mut self, mut point: Point) {
+    pub(crate) fn insert(&mut self, point: Point) {
         // Add points to self if points is some and within capacity
         if self.points.is_some() && self.points.as_ref().unwrap().len() <= self.capacity {
             self.points.as_mut().unwrap().push(point);
@@ -86,7 +85,9 @@ impl Octree {
                 octree_index,
             ));
         }
-        self.children[index].as_mut().map(|ot| ot.insert(point));
+        if let Some(ot) = self.children[index].as_mut() {
+            ot.insert(point)
+        }
 
         // If self.points is some but we got here (over capacity), we redistribute them into children
         // and set it to none. Nice and easy!
@@ -245,7 +246,7 @@ pub(crate) fn octree_visualiser(
 pub(crate) struct OctreeVisualiserPlugin;
 
 pub(crate) fn octree_visualiser_startup(mut commands: Commands) {
-    let mut octree = Octree::new(5, Vec3::ZERO, 50.0, 0, vec![0]);
+    let octree = Octree::new(5, Vec3::ZERO, 50.0, 0, vec![0]);
 
     commands.spawn(octree);
 

@@ -42,8 +42,8 @@ pub(crate) fn sort_poly_vertices(vertices: &Vec<Vec3>, indices: Vec<usize>) -> V
                 continue;
             }
 
-            let a = vertices[u as usize];
-            let b = vertices[v as usize];
+            let a = vertices[u];
+            let b = vertices[v];
 
             let distance = (a - b).length_squared();
 

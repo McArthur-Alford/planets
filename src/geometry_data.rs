@@ -1,4 +1,4 @@
-use bevy::pbr::{ExtendedMaterial, OpaqueRendererMethod};
+use bevy::pbr::ExtendedMaterial;
 use bevy::render::mesh::{Indices, PrimitiveTopology::TriangleList};
 use bevy::{asset::RenderAssetUsages, prelude::*};
 use rand::{random, random_range};
@@ -8,7 +8,6 @@ use crate::camera::CameraTarget;
 use crate::chunking::ChunkManager;
 use crate::flatnormal::FlatNormalMaterial;
 use crate::helpers::{self, sort_poly_vertices};
-use crate::{chunking, Wireframeable};
 
 #[derive(Default, Clone)]
 pub(crate) struct GeometryData {
@@ -75,7 +74,7 @@ impl GeometryData {
         // flip any faces order that is not clockwise
         for face in &mut dual_faces {
             let [a, b, c] = (0..3)
-                .map(|i| Vec3::from(dual_vertices[face[i]]))
+                .map(|i| dual_vertices[face[i]])
                 .collect::<Vec<Vec3>>()[..3]
             else {
                 panic!("Impossible!!")
@@ -102,9 +101,9 @@ impl GeometryData {
         let mut new_faces = Vec::with_capacity(self.faces.len());
 
         for [i0, i1, i2] in self.faces {
-            let v0 = self.vertices[i0 as usize];
-            let v1 = self.vertices[i1 as usize];
-            let v2 = self.vertices[i2 as usize];
+            let v0 = self.vertices[i0];
+            let v1 = self.vertices[i1];
+            let v2 = self.vertices[i2];
 
             let start_index = new_vertices.len();
             new_vertices.push(v0);
@@ -175,11 +174,11 @@ impl GeometryData {
         self
     }
 
-    pub(crate) fn deregulate(mut self) -> Self {
+    pub(crate) fn deregulate(self) -> Self {
         self
     }
 
-    pub(crate) fn relax(mut self) -> Self {
+    pub(crate) fn relax(self) -> Self {
         self
     }
 
@@ -386,8 +385,8 @@ impl GeometryData {
 }
 
 pub(crate) fn setup_demo_sphere(
-    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+    meshes: ResMut<Assets<Mesh>>,
     mut commands: Commands,
 ) {
     let geom = GeometryData::icosahedron()

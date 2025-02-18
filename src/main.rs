@@ -9,7 +9,6 @@ mod octree;
 
 use bevy::{
     color::palettes::css::GREEN,
-    gizmos::GizmoPlugin,
     pbr::wireframe::{Wireframe, WireframeConfig, WireframePlugin},
     prelude::*,
     render::{
@@ -19,11 +18,9 @@ use bevy::{
 };
 use bevy_fps_counter::FpsCounterPlugin;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
-use camera::{mouse_drag, mouse_scroll, position_camera, setup_camera, CameraPlugin};
-use chunking::{setup_demo_chunk_manager, ChunkManagerDemoPlugin};
+use camera::CameraPlugin;
+use chunking::ChunkManagerDemoPlugin;
 use flatnormal::FlatNormalMaterialPlugin;
-use geometry_data::setup_demo_sphere;
-use octree::OctreeVisualiserPlugin;
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
 struct Gizmos;
@@ -60,10 +57,10 @@ fn main() {
             global: false,
             default_color: GREEN.into(),
         })
-        .add_systems(Startup, (setup))
+        .add_systems(Startup, setup)
         // .add_systems(Startup, setup_demo_sphere)
         .add_systems(Update, toggle_wireframe)
-        .add_systems(FixedUpdate, (spin_light))
+        .add_systems(FixedUpdate, spin_light)
         .run();
 }
 
