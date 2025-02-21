@@ -53,7 +53,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(FlatNormalMaterialPlugin)
-        .add_plugins((PanOrbitCameraPlugin, WireframePlugin))
+        .add_plugins((WireframePlugin))
         .add_plugins(FpsCounterPlugin)
         // .add_plugins(WorldInspectorPlugin::new())
         // .add_plugins(OctreeVisualiserPlugin)

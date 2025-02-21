@@ -187,7 +187,7 @@ impl ChunkManager {
         self.pov = new_pov;
 
         // 1) Octree to find chunk indices near new POV
-        let needed_indices = self.octree.get_chunk_indices(new_pov);
+        let needed_indices = self.octree.get_chunk_indices(1, new_pov, 1.0);
 
         // Create requests for newly needed
         for idx in &needed_indices {

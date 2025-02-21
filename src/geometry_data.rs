@@ -344,6 +344,7 @@ impl GeometryData {
         let mut chunk_faces = Vec::new();
         let mut chunk_cells = Vec::new();
         let mut chunk_cell_normals = Vec::new();
+        let mut vert_map = BTreeMap::<usize, usize>::new();
         let mut cell_map = BTreeMap::new();
 
         for &cell_id in cells {
@@ -353,10 +354,12 @@ impl GeometryData {
             for &face_idx in face_indices {
                 let face = self.faces[face_idx];
                 for &vert_idx in &face {
-                    chunk_vertices.push(self.vertices[vert_idx]);
+                    vert_map.entry(vert_idx).or_insert_with(|| {
+                        chunk_vertices.push(self.vertices[vert_idx]);
+                        chunk_vertices.len() - 1
+                    });
                 }
-                let start = chunk_vertices.len() - 3;
-                chunk_faces.push([start, start + 1, start + 2]);
+                chunk_faces.push([vert_map[&face[0]], vert_map[&face[1]], vert_map[&face[2]]]);
                 new_cell_faces.push(chunk_faces.len() - 1);
             }
 
@@ -398,6 +401,88 @@ impl GeometryData {
         }
 
         octree
+    }
+
+    pub fn simplify(mut self) -> Self {
+        // Determine how many cells each vertex is part of.
+        let mut cell_count_per_vertex = vec![0; self.vertices.len()];
+        for cell in &self.cells {
+            let mut cell_vertices = BTreeSet::new();
+            for face in cell.iter().map(|c| self.faces[*c]) {
+                for v_idx in face {
+                    cell_vertices.insert(v_idx);
+                }
+            }
+            for v_idx in cell_vertices {
+                cell_count_per_vertex[v_idx] += 1;
+            }
+        }
+
+        // Decide which vertices are "internal" based on how many cells they belong to
+        let threshold = 3;
+        let mut is_internal = vec![false; self.vertices.len()];
+        for (v_idx, &count) in cell_count_per_vertex.iter().enumerate() {
+            if count >= threshold {
+                is_internal[v_idx] = true;
+            }
+        }
+
+        // Calculate the avg and slerp it
+        let mut avg = Vec3::ZERO;
+        for vert in &self.vertices {
+            avg += vert;
+        }
+        avg /= self.vertices.len() as f32;
+        avg = avg.normalize();
+
+        // Generate the new list of vertices and store a map
+        let mut map = BTreeMap::<usize, usize>::new();
+        let mut boundary_vertices = vec![avg];
+        for (v_idx, vertex) in self.vertices.iter().enumerate() {
+            if is_internal[v_idx] {
+                continue;
+            }
+            map.entry(v_idx).or_insert_with(|| {
+                boundary_vertices.push(*vertex);
+                boundary_vertices.len() - 1
+            });
+        }
+
+        // Figure out the edges we will keep
+        let mut boundary_edges = Vec::new();
+        for &face in &self.faces {
+            let [i0, i1, i2] = face;
+            if !(is_internal[i0] || is_internal[i1]) {
+                boundary_edges.push([map[&i0], map[&i1]]);
+            }
+            if !(is_internal[i1] || is_internal[i2]) {
+                boundary_edges.push([map[&i1], map[&i2]]);
+            }
+            if !(is_internal[i2] || is_internal[i0]) {
+                boundary_edges.push([map[&i2], map[&i0]]);
+            }
+        }
+
+        // Fan triangulation the boundary edges into faces
+        let mut faces = Vec::new();
+        for edge in boundary_edges {
+            if edge.contains(&0) {
+                continue;
+            }
+            faces.push([0, edge[0], edge[1]]);
+        }
+
+        // And then we just create one cell that stores all faces
+        let cells: Vec<Vec<usize>> = vec![(0..faces.len()).collect()];
+        let cell_neighbors = vec![BTreeSet::new()];
+
+        self.vertices = boundary_vertices;
+        self.faces = faces;
+        self.cells = cells;
+        self.cell_neighbors = cell_neighbors;
+        self.cell_normals = self.cell_centroids();
+
+        self
     }
 }
 

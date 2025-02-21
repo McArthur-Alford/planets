@@ -1,6 +1,10 @@
 use crate::{
-    camera::CameraTarget, chunking::HexsphereMaterial, flatnormal::FlatNormalMaterial,
-    geometry_data::GeometryData, octree::Octree,
+    camera::CameraTarget,
+    chunking::HexsphereMaterial,
+    flatnormal::{FlatNormalMaterial, ATTRIBUTE_BLEND_COLOR},
+    geometry_data::GeometryData,
+    octree::Octree,
+    Wireframeable,
 };
 use bevy::{
     pbr::{ExtendedMaterial, OpaqueRendererMethod},
@@ -22,7 +26,7 @@ pub struct Body {
 
 impl Body {
     pub fn new(geometry: GeometryData) -> Self {
-        let capacity = 16;
+        let capacity = 8;
         let bounds = 1.0;
         let center = Vec3::ZERO;
 
@@ -112,36 +116,10 @@ fn create_material(
     flat_materials.add(extended_material)
 }
 
-fn setup_bodies(
-    mut commands: Commands,
-    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
-) {
-    let geom = crate::geometry_data::GeometryData::icosahedron()
-        .subdivide_n(9)
-        .slerp()
-        .recell()
-        .dual()
-        .duplicate();
-
-    let body = Body::new(geom);
-
-    commands.spawn((Transform::IDENTITY, CameraTarget { radius: 32.0 }));
-    commands.spawn((
-        body,
-        ChunkStorage::default(),
-        ChunkRefs::default(),
-        Name::new("Planet"),
-        Transform::default().with_translation(Vec3::ZERO),
-    ));
-
-    let material = create_material(&mut flat_materials);
-    commands.insert_resource(HexsphereMaterial(material));
-}
-
 fn calculate_povs(
     mut commands: Commands,
     mut pov_query: Query<(&Transform, &mut POV, &Projection)>,
-    mut body_query: Query<(Entity, &Body, &mut ChunkRefs)>,
+    mut body_query: Query<(Entity, &Body, &mut ChunkRefs, &Transform)>,
 ) {
     let Ok((camera_transform, mut pov, projection)) = pov_query.get_single_mut() else {
         return;
@@ -157,11 +135,13 @@ fn calculate_povs(
 
     pov.0 = camera_transform.translation;
 
-    let needed_pos = camera_transform.translation.normalize()
-        + camera_transform.translation.normalize() * (persp.fov / 5.0);
-
-    for (body_entity, body, mut chunk_refs) in body_query.iter_mut() {
-        let needed_indices = body.octree.get_chunk_indices(needed_pos);
+    for (body_entity, body, mut chunk_refs, transform) in body_query.iter_mut() {
+        let cell_count = body.geometry.cells.len();
+        let needed_indices = body.octree.get_chunk_indices(
+            cell_count,
+            (camera_transform.translation - transform.translation).normalize(),
+            persp.fov.sqrt(),
+        );
         let needed_indices: BTreeSet<_> = needed_indices.into_iter().collect();
 
         let existing_set: BTreeSet<_> = chunk_refs.0.keys().cloned().collect();
@@ -195,7 +175,6 @@ fn calculate_povs(
             .difference(&needed_indices)
             .cloned()
             .collect::<Vec<_>>();
-        dbg!(obsolete_indices.len());
 
         // Any chunk is potentially being replaced by several others,
         // we mark those in the replacing map
@@ -224,6 +203,7 @@ fn calculate_povs(
                         .entry(index.clone())
                         .or_insert_with(Vec::new)
                         .push(parent_index);
+                    break;
                 }
             }
         }
@@ -270,7 +250,7 @@ fn despawn_chunks(
     // or they no longer exist, then we can delete ourself.
     // This way, chunks never despawn and leave empty loading holes.
 
-    for (chunk_entity, chunk, AwaitingDeletion(pending)) in chunk_query.iter().take(100) {
+    for (chunk_entity, chunk, AwaitingDeletion(pending)) in chunk_query.iter() {
         let Ok((mut chunk_refs, mut storage)) = body_query.get_mut(chunk.body) else {
             commands.entity(chunk_entity).despawn_recursive();
             continue;
@@ -339,8 +319,17 @@ fn generate_meshes(
                 return None;
             };
 
-            let local_geometry = geometry.sub_geometry(&cells);
-            let mesh = local_geometry.mesh();
+            let mut local_geometry = geometry.sub_geometry(&cells);
+            if local_geometry.cells.len() > 256 {
+                local_geometry = local_geometry.simplify();
+            } else {
+                local_geometry = local_geometry.duplicate();
+            }
+            let mut mesh = local_geometry.mesh();
+            mesh.insert_attribute(
+                ATTRIBUTE_BLEND_COLOR,
+                vec![[1.0, 0.0, 0.0, 1.0]; local_geometry.vertices.len()],
+            );
 
             Some((cells, mesh))
         });
@@ -381,7 +370,7 @@ fn spawn_ready_chunks(
     chunk_query: Query<(Entity, &Chunk), (With<NeedsMesh>, Without<GeneratingMesh>)>,
     material: Res<HexsphereMaterial>,
 ) {
-    for (chunk_entity, chunk) in chunk_query.iter().take(100) {
+    for (chunk_entity, chunk) in chunk_query.iter() {
         let Ok(mut storage) = body_query.get_mut(chunk.body) else {
             continue;
         };
@@ -397,6 +386,7 @@ fn spawn_ready_chunks(
                         Mesh3d(mesh_handle.clone()),
                         MeshMaterial3d(material.0.clone()),
                         Transform::from_scale(Vec3::splat(32.0)),
+                        Wireframeable,
                     ))
                     .remove::<NeedsMesh>();
                 });
@@ -404,4 +394,31 @@ fn spawn_ready_chunks(
             storage.0.remove(&chunk.index);
         }
     }
+}
+
+fn setup_bodies(
+    mut commands: Commands,
+    mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
+) {
+    let geom = crate::geometry_data::GeometryData::icosahedron()
+        .subdivide_n(8)
+        .slerp()
+        .recell()
+        .dual();
+
+    let body = Body::new(geom);
+
+    commands.spawn((
+        body,
+        ChunkStorage::default(),
+        ChunkRefs::default(),
+        Name::new("Planet"),
+        Transform::default()
+            .with_translation(Vec3::ZERO)
+            .with_scale(Vec3::splat(32.)),
+        CameraTarget { radius: 32.0 },
+    ));
+
+    let material = create_material(&mut flat_materials);
+    commands.insert_resource(HexsphereMaterial(material));
 }

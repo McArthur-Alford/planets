@@ -26,6 +26,7 @@ pub(crate) struct Octree {
     pub(crate) height: usize, // The height of this node (distance from furthest leaf)
     pub(crate) depth: usize,
     pub(crate) octree_index: Vec<u8>,
+    pub(crate) cell_count: usize,
 }
 
 impl Octree {
@@ -45,6 +46,7 @@ impl Octree {
             height: 0,
             depth,
             octree_index,
+            cell_count: 0,
         }
     }
 
@@ -64,6 +66,8 @@ impl Octree {
     }
 
     pub(crate) fn insert(&mut self, point: Point) {
+        self.cell_count += 1;
+
         // Add points to self if points is some and within capacity
         if self.points.is_some() && self.points.as_ref().unwrap().len() <= self.capacity {
             self.points.as_mut().unwrap().push(point);
@@ -152,30 +156,59 @@ impl Octree {
         results
     }
 
-    pub(crate) fn get_chunk_indices(&self, target: Vec3) -> Vec<Vec<u8>> {
-        let multiplier = (1.0 / self.height.max(1) as f32) * self.bounds;
-        let projected = target.clamp(
-            self.center - Vec3::splat(self.bounds),
-            self.center + Vec3::splat(self.bounds),
-        );
-        let dist = projected.distance_squared(target).powf(1.5);
-        let mut desired_height = 0;
-        while dist >= (desired_height as f32 + 0.1) * multiplier {
-            desired_height += 1;
+    pub(crate) fn get_chunk_indices(
+        &self,
+        cell_count: usize,
+        target: Vec3,
+        zoom: f32,
+    ) -> Vec<Vec<u8>> {
+        let projected = self.center + (target - self.center).clamp_length_max(self.bounds);
+        let dist = (projected.distance(target)).max(0.0) / 2.0;
+        let local_cells = self.cell_count;
+        let pct = local_cells as f32 / cell_count as f32;
+
+        let mut l = 0.5;
+        let mut k = 14.0;
+        let mut x0 = 0.8;
+        let mut m = 2.0 * self.capacity as f32 / cell_count as f32;
+
+        if zoom > 0.8 {
+            x0 -= 0.05;
+        }
+        if zoom > 0.9 {
+            x0 -= 0.05;
+        }
+        if zoom > 1.0 {
+            x0 -= 0.05;
+        }
+        if zoom > 1.1 {
+            x0 -= 0.05;
+        }
+        if zoom > 1.2 {
+            x0 -= 0.05;
+        }
+        if zoom < 0.5 {
+            l -= 0.1;
+        }
+        if zoom < 0.4 {
+            l -= 0.1;
         }
 
-        // if dist > 0.9 {
-        //     return Vec::new();
-        // }
+        let heuristic = m + (l - m) / (1.0 + (k * (x0 - dist)).exp());
 
         let mut results = Vec::new();
-        if desired_height >= self.height {
+        if heuristic >= pct as f32 {
             results.push(self.octree_index.clone());
         } else {
             for child in self.children.iter().flatten() {
-                results.extend(child.get_chunk_indices(target));
+                results.extend(child.get_chunk_indices(cell_count, target, zoom));
             }
         }
+
+        if results.len() == 0 {
+            results.push(self.octree_index.clone());
+        }
+
         results
     }
 

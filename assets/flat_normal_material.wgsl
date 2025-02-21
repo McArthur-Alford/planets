@@ -12,15 +12,23 @@
 
 #ifdef PREPASS_PIPELINE
 #import bevy_pbr::{
-    prepass_io::{Vertex, VertexOutput, FragmentOutput},
+    prepass_io::{VertexOutput, FragmentOutput},
     pbr_deferred_functions::deferred_output,
 }
 #else
 #import bevy_pbr::{
-    forward_io::{Vertex, VertexOutput, FragmentOutput},
+    forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
 }
 #endif
+
+struct Vertex {
+    @builtin(instance_index) instance_index: u32,
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(5) color: vec4<f32>,
+    @location(10) blend_color: vec4<f32>,
+};
 
 @vertex
 fn vertex(
@@ -83,7 +91,7 @@ fn fragment(
 
     // apply in-shader post processing (fog, alpha-premultiply, and also tonemapping, debanding if the camera is non-hdr)
     // note this does not include fullscreen postprocessing effects like bloom.
-    out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    out.color = main_pass_post_lighting_processing(pbr_input, out.color*0.4);
 
     // out.color = vec4(pbr_input.N, 1.0); // Render Normals
     // out.color = in.color;
