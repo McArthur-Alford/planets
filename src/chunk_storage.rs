@@ -143,115 +143,118 @@ fn calculate_povs(
     mut pov_query: Query<(&Transform, &mut POV, &Projection)>,
     mut body_query: Query<(Entity, &Body, &mut ChunkRefs)>,
 ) {
-    if pov_query.is_empty() {
-        return;
-    }
-
-    let (pov_transform, mut pov, projection) = pov_query.single_mut();
-    if (pov.0 - pov_transform.translation).length() < 0.01 {
-        return;
-    }
-    let Projection::Perspective(projection) = projection else {
+    let Ok((camera_transform, mut pov, projection)) = pov_query.get_single_mut() else {
         return;
     };
-    pov.0 = pov_transform.translation.clone();
+
+    if pov.0.distance_squared(camera_transform.translation) < 0.0001 {
+        return;
+    }
+
+    let Projection::Perspective(persp) = projection else {
+        return;
+    };
+
+    pov.0 = camera_transform.translation;
+
+    let needed_pos = camera_transform.translation.normalize()
+        + camera_transform.translation.normalize() * (persp.fov / 5.0);
 
     for (body_entity, body, mut chunk_refs) in body_query.iter_mut() {
-        let pov = pov_transform.translation.normalize()
-            + pov_transform.translation.normalize() * projection.fov / 5.0;
+        let needed_indices = body.octree.get_chunk_indices(needed_pos);
+        let needed_indices: BTreeSet<_> = needed_indices.into_iter().collect();
 
-        let needed_indices = body.octree.get_chunk_indices(pov);
+        let existing_set: BTreeSet<_> = chunk_refs.0.keys().cloned().collect();
 
-        let needed_set: BTreeSet<ChunkIndex> = needed_indices.into_iter().collect();
-
-        let existing_set: BTreeSet<ChunkIndex> = chunk_refs.0.keys().cloned().collect();
-
-        let mut awaiting: BTreeMap<ChunkIndex, Vec<ChunkIndex>> = BTreeMap::new();
-        for obsolete_index in existing_set.difference(&needed_set) {
-            // crawl up the needed set to find any potential parent of this node
-            // note that node is *our* parent
-            for i in (0..obsolete_index.len()).rev() {
-                let key: ChunkIndex = obsolete_index[0..=i].to_vec();
-                if needed_set.contains(&key) && !existing_set.contains(&key) {
-                    awaiting
-                        .entry(obsolete_index.clone())
-                        .or_insert_with(Vec::new)
-                        .push(key);
-                    break;
-                }
-            }
-        }
-
-        for missing_index in &needed_set {
-            let entry = chunk_refs
-                .0
-                .entry(missing_index.clone())
-                .or_insert_with(|| {
-                    ChunkRef::Active(
-                        commands
-                            .spawn((
-                                Chunk {
-                                    body: body_entity,
-                                    index: missing_index.clone(),
-                                },
-                                NeedsMesh, // Mark that we must generate a mesh
-                                Name::new(format!("Chunk {:?}", missing_index)),
-                            ))
-                            .id(),
-                    )
-                });
-
-            *entry = match *entry {
-                ChunkRef::Active(entity) => ChunkRef::Active(entity),
-                ChunkRef::Cleanup(entity) => {
-                    // it was already being cleaned up but got reinstated
-                    // so remove the awaiting deletion + pending set from it
+        for index in &needed_indices {
+            let entity = match chunk_refs.0.get(index) {
+                Some(ChunkRef::Active(entity)) => *entity,
+                Some(ChunkRef::Cleanup(entity)) => {
                     commands
-                        .entity(entity)
+                        .entity(*entity)
                         .remove::<AwaitingDeletion>()
                         .remove::<GeneratingMesh>()
                         .insert(NeedsMesh);
-                    ChunkRef::Active(entity)
+                    *entity
                 }
+                None => commands
+                    .spawn((
+                        Chunk {
+                            body: body_entity,
+                            index: index.clone(),
+                        },
+                        NeedsMesh,
+                        Name::new(format!("Chunk {:?}", index)),
+                    ))
+                    .id(),
             };
+            chunk_refs.0.insert(index.clone(), ChunkRef::Active(entity));
+        }
 
-            // also, crawl up the existing set to find any potential parent of this node
-            // Note that nodes children include us
-            for i in (0..missing_index.len()).rev() {
-                let key: ChunkIndex = missing_index[0..i].to_vec();
-                let Some(value) = existing_set.get(&key) else {
-                    continue;
-                };
-                if !chunk_refs
-                    .0
-                    .get(value)
-                    .is_none_or(|x| matches!(x, ChunkRef::Cleanup(_)))
-                    && !needed_set.contains(&key)
-                {
-                    awaiting
-                        .entry(key)
+        let obsolete_indices = existing_set
+            .difference(&needed_indices)
+            .cloned()
+            .collect::<Vec<_>>();
+        dbg!(obsolete_indices.len());
+
+        // Any chunk is potentially being replaced by several others,
+        // we mark those in the replacing map
+        let mut replacing = BTreeMap::<ChunkIndex, Vec<ChunkIndex>>::new();
+
+        for index in &needed_indices {
+            // Crawl up, see if there is any obsolete parent
+            for i in (0..index.len()).rev() {
+                let parent_index = index[0..i].to_vec();
+                // if the parent chunk exists already and is obsolete
+                if obsolete_indices.contains(&parent_index) {
+                    replacing
+                        .entry(parent_index)
                         .or_insert_with(Vec::new)
-                        .push(missing_index.clone());
-                    break;
+                        .push(index.clone());
+                }
+            }
+        }
+        for index in &obsolete_indices {
+            // Crawl up, see if there is any brand new parent
+            for i in (0..index.len()).rev() {
+                let parent_index = index[0..i].to_vec();
+                // There is a parent that is currently needed!
+                if needed_indices.contains(&parent_index) {
+                    replacing
+                        .entry(index.clone())
+                        .or_insert_with(Vec::new)
+                        .push(parent_index);
                 }
             }
         }
 
-        for obsolete_index in existing_set.difference(&needed_set) {
-            if let Some(chunk_entity) = chunk_refs.0.get(obsolete_index).cloned() {
-                let ChunkRef::Active(entity) = chunk_entity else {
-                    continue;
-                };
-                chunk_refs
-                    .0
-                    .insert(obsolete_index.clone(), ChunkRef::Cleanup(entity));
-                commands
-                    .entity(entity)
-                    .insert(AwaitingDeletion(
-                        awaiting.remove(obsolete_index).unwrap_or_default(),
-                    ))
-                    .remove::<NeedsMesh>()
-                    .remove::<GeneratingMesh>();
+        for index in obsolete_indices {
+            match chunk_refs.0.get(&index).cloned() {
+                Some(ChunkRef::Active(entity)) => {
+                    // Switch from Active -> Cleanup
+                    chunk_refs
+                        .0
+                        .insert(index.clone(), ChunkRef::Cleanup(entity));
+                    commands
+                        .entity(entity)
+                        .insert(AwaitingDeletion(
+                            replacing.remove(&index).unwrap_or_default(),
+                        ))
+                        .remove::<NeedsMesh>()
+                        .remove::<GeneratingMesh>();
+                }
+                Some(ChunkRef::Cleanup(entity)) => {
+                    // The thing was already being cleaned up, but it might now have a new set of things
+                    // it is depending on
+                    commands
+                        .entity(entity)
+                        .insert(AwaitingDeletion(
+                            replacing.remove(&index).unwrap_or_default(),
+                        ))
+                        .remove::<NeedsMesh>()
+                        .remove::<GeneratingMesh>();
+                }
+                None => todo!(),
             }
         }
     }
@@ -260,7 +263,7 @@ fn calculate_povs(
 fn despawn_chunks(
     mut commands: Commands,
     chunk_query: Query<(Entity, &Chunk, &AwaitingDeletion)>,
-    needs_mesh: Query<Option<&Mesh3d>>,
+    has_mesh: Query<Option<&Mesh3d>>,
     mut body_query: Query<(&mut ChunkRefs, &mut ChunkStorage)>,
 ) {
     // If all the things that replaced us (potentially 1) have meshes,
@@ -280,7 +283,7 @@ fn despawn_chunks(
                 Some(ChunkRef::Cleanup(cr)) => cr,
                 None => continue,
             };
-            if let Ok(None) = needs_mesh.get(*cr) {
+            if let Ok(None) = has_mesh.get(*cr) {
                 can_delete = false;
                 break;
             }
@@ -312,7 +315,7 @@ fn generate_meshes(
             commands.entity(chunk_entity).remove::<NeedsMesh>();
             continue;
         }
-        if i > 60 {
+        if i > 256 {
             return;
         }
         // Look up the body to get geometry / octree
@@ -321,13 +324,11 @@ fn generate_meshes(
         };
 
         // If we already have a mesh in storage, no need to generate again
-        // if let Some(chunk_data) = storage.0.get(&chunk.index) {
-        //     if chunk_data.mesh_handle.is_some() {
-        //         // Already has mesh, remove `NeedsMesh`.
-        //         commands.entity(chunk_entity).remove::<NeedsMesh>();
-        //         continue;
-        //     }
-        // }
+        if let Some(chunk_data) = storage.0.get(&chunk.index) {
+            if chunk_data.mesh_handle.is_some() {
+                continue;
+            }
+        }
 
         let index_clone = chunk.index.clone();
         let geometry = body.geometry.clone();
@@ -400,7 +401,7 @@ fn spawn_ready_chunks(
                     .remove::<NeedsMesh>();
                 });
             }
+            storage.0.remove(&chunk.index);
         }
-        storage.0.remove(&chunk.index);
     }
 }
