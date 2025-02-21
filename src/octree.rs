@@ -164,9 +164,9 @@ impl Octree {
             desired_height += 1;
         }
 
-        if dist > 0.9 {
-            return Vec::new();
-        }
+        // if dist > 0.9 {
+        //     return Vec::new();
+        // }
 
         let mut results = Vec::new();
         if desired_height >= self.height {

@@ -3,6 +3,8 @@ use bevy::{
     input::mouse::{MouseMotion, MouseWheel},
     prelude::*,
 };
+
+use crate::chunk_storage::POV;
 // Spherical camera shenangigans
 // Needs to map the camera position to the nearest point on the sphere
 // Camera transform gets set to that point
@@ -36,6 +38,7 @@ pub(crate) fn setup_camera(mut commands: Commands) {
         Camera3d::default(),
         Transform::from_xyz(0.0, 0.0, 1.0),
         GameCamera,
+        POV(Vec3::ZERO),
     ));
 }
 

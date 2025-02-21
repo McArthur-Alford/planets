@@ -1,4 +1,7 @@
 mod camera;
+mod chunk_manager;
+mod chunk_storage;
+mod chunk_tree;
 mod chunking;
 mod fibonacci_sphere;
 mod fibonacci_sphere_visualiser;
@@ -20,6 +23,7 @@ use bevy_fps_counter::FpsCounterPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use camera::CameraPlugin;
+use chunk_storage::ChunkingPlugin;
 use chunking::ChunkManagerDemoPlugin;
 use flatnormal::FlatNormalMaterialPlugin;
 
@@ -54,7 +58,7 @@ fn main() {
         // .add_plugins(WorldInspectorPlugin::new())
         // .add_plugins(OctreeVisualiserPlugin)
         .add_plugins(CameraPlugin)
-        .add_plugins(ChunkManagerDemoPlugin)
+        .add_plugins(ChunkingPlugin)
         .insert_resource(WireframeConfig {
             global: false,
             default_color: GREEN.into(),

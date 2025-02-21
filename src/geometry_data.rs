@@ -8,6 +8,7 @@ use crate::camera::CameraTarget;
 use crate::chunking::ChunkManager;
 use crate::flatnormal::FlatNormalMaterial;
 use crate::helpers::{self, sort_poly_vertices};
+use crate::octree::{Octree, Point};
 
 #[derive(Default, Clone)]
 pub(crate) struct GeometryData {
@@ -381,6 +382,22 @@ impl GeometryData {
             cell_neighbors: chunk_cell_neighbors,
             cell_normals: chunk_cell_normals,
         }
+    }
+
+    pub(crate) fn create_octree(&self) -> Octree {
+        let capacity = 128;
+        let bounds = 1.0;
+        let center = Vec3::ZERO;
+        let mut octree = Octree::new(capacity, center, bounds, 0, vec![]);
+
+        for (cell_index, &position) in self.cell_normals.iter().enumerate() {
+            octree.insert(Point {
+                position,
+                value: cell_index,
+            });
+        }
+
+        octree
     }
 }
 

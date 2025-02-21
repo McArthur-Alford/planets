@@ -13,7 +13,7 @@ use crate::flatnormal::FlatNormalMaterial;
 use crate::geometry_data::GeometryData;
 use crate::octree::{Octree, Point};
 
-type ChunkIndex = Vec<u8>;
+pub(crate) type ChunkIndex = Vec<u8>;
 
 const NUM_WORKERS: usize = 16;
 
@@ -275,7 +275,7 @@ fn create_material(
 }
 
 #[derive(Resource)]
-pub struct HexsphereMaterial(Handle<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>);
+pub struct HexsphereMaterial(pub Handle<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>);
 
 pub(crate) fn update_chunk_pov_system(
     mut query: Query<&mut ChunkManager>,
@@ -365,7 +365,7 @@ pub fn setup_demo_chunk_manager(
     mut flat_materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
 ) {
     let geom = crate::geometry_data::GeometryData::icosahedron()
-        .subdivide_n(9)
+        .subdivide_n(8)
         .slerp()
         .recell()
         .dual()
