@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 use bevy::{
     pbr::ExtendedMaterial, prelude::*, render::mesh::VertexAttributeValues,
@@ -7,9 +10,8 @@ use bevy::{
 use rand::{random_range, seq::index};
 
 use crate::{
+    chunk_storage::{Body, Chunk, ChunkCells},
     flatnormal::FlatNormalMaterial,
-    goldberg::GoldbergPoly,
-    surface::{ChunkSizeLimit, Surface},
 };
 
 /// Represents a planets hex colours
@@ -18,8 +20,11 @@ pub(crate) struct HexColors {
     // The color of each cell
     pub(crate) colors: Vec<Color>,
     // A list of indices into changed cells
-    pub(crate) changed: Vec<usize>,
+    pub(crate) changed: BTreeSet<usize>,
 }
+
+#[derive(Component)]
+pub(crate) struct NeedsColoring;
 
 pub(crate) fn randomize_colors(mut hexes: Query<(&mut HexColors)>) {
     // Pick a handful of random hexes
@@ -36,7 +41,7 @@ pub(crate) fn randomize_colors(mut hexes: Query<(&mut HexColors)>) {
 
     let mut rng = rand::rng();
     for mut colors in hexes.iter_mut() {
-        let samples = index::sample(&mut rng, colors.colors.len(), 250);
+        let samples = index::sample(&mut rng, colors.colors.len(), 10000);
 
         for sample in samples {
             let t = random_range(0.0..=1.0f32).powi(2);
@@ -64,18 +69,109 @@ pub(crate) fn randomize_colors(mut hexes: Query<(&mut HexColors)>) {
             // }
 
             colors.colors[sample] = Color::from(LinearRgba::from_f32_array([r, g, b, a]));
-            colors.changed.push(sample);
+            colors.changed.insert(sample);
         }
     }
 }
+
+#[derive(Component)]
+pub struct ColorCooldown(Timer);
 
 pub(crate) fn update_mesh_colors(
     mut commands: Commands,
     // mut materials: ResMut<Assets<ExtendedMaterial<StandardMaterial, FlatNormalMaterial>>>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut hexes: Query<(&mut HexColors, &Surface, &ChunkSizeLimit)>,
-    mut mesh_handles: Query<&Mesh3d>,
+    mut hexes: Query<(&mut HexColors, &Body)>,
+    mut chunks: Query<(
+        Entity,
+        &Chunk,
+        &Mesh3d,
+        &ChunkCells,
+        Option<&NeedsColoring>,
+        Option<&mut ColorCooldown>,
+    )>,
 ) {
+    let time = Instant::now();
+    for (entity, chunk, mesh3d, chunk_cells, needs_coloring, mut color_cooldown) in
+        chunks.iter_mut()
+    {
+        if let Some(timer) = &mut color_cooldown {
+            if !timer.0.finished() {
+                continue;
+            } else {
+                timer.0.reset();
+                timer.0.unpause();
+            }
+        } else {
+            commands.entity(entity).insert(ColorCooldown(Timer::new(
+                Duration::from_millis(1000),
+                TimerMode::Once,
+            )));
+        }
+
+        if Instant::now().duration_since(time) > Duration::from_millis(3) {
+            return;
+        }
+        let Ok((hex_colors, _body)) = hexes.get_mut(chunk.body) else {
+            continue;
+        };
+        let ChunkCells {
+            cells: Some(cells),
+            cells_to_local: Some(cells_to_local),
+            local_geometry: Some(local_geometry),
+        } = chunk_cells
+        else {
+            continue;
+        };
+
+        // TODO cache this instead of recalcing for each chunk pls
+        let HexColors { colors, changed } = hex_colors.into_inner();
+        let intersection: Vec<usize> = changed.intersection(cells).into_iter().copied().collect();
+
+        if (intersection.len() as f32) < (0.75 * local_geometry.cells.len() as f32)
+            && needs_coloring.is_none()
+        {
+            continue;
+        }
+        let handle = mesh3d.0.clone_weak();
+        let Some(mesh) = meshes.get_mut(&handle) else {
+            continue;
+        };
+
+        // Gather the colors of the chunk
+        let mut new_colors = Vec::new();
+        let mut seen = BTreeSet::new();
+        for cell in cells {
+            if !seen.insert(cells_to_local[cell]) {
+                continue;
+            }
+            let color = colors[*cell].to_linear().to_f32_array();
+            let local_cell = cells_to_local[cell];
+            let faces = &local_geometry.cells[local_cell];
+
+            let mut seen_verts = BTreeSet::new();
+            for f in faces {
+                for v in local_geometry.faces[*f] {
+                    if !seen_verts.insert(v) {
+                        continue;
+                    };
+                    new_colors.push(color);
+                }
+            }
+        }
+
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            VertexAttributeValues::Float32x4(new_colors),
+        );
+
+        for i in intersection {
+            changed.remove(&i);
+        }
+
+        commands.entity(entity).remove::<NeedsColoring>();
+    }
+
     // for (mut hex_colors, surface, limit) in hexes.iter_mut() {
     //     if hex_colors.changed.len() <= 500 {
     //         // We only do the update if enough meshes are changed,

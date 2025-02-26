@@ -1,6 +1,7 @@
 use crate::{
     camera::CameraTarget,
     chunking::HexsphereMaterial,
+    colors::{HexColors, NeedsColoring},
     flatnormal::{FlatNormalMaterial, ATTRIBUTE_BLEND_COLOR},
     geometry_data::GeometryData,
     octree::Octree,
@@ -26,7 +27,7 @@ pub struct Body {
 
 impl Body {
     pub fn new(geometry: GeometryData) -> Self {
-        let capacity = 8;
+        let capacity = 16;
         let bounds = 1.0;
         let center = Vec3::ZERO;
 
@@ -51,6 +52,14 @@ pub struct ChunkData {
     pub mesh_handle: Option<Handle<Mesh>>,
     pub entity: Option<Entity>,
     pub cells: Option<Vec<usize>>,
+    pub cells_to_vert: Option<BTreeMap<usize, usize>>,
+}
+
+#[derive(Component)]
+pub struct ChunkCells {
+    pub cells: Option<BTreeSet<usize>>,
+    pub cells_to_local: Option<BTreeMap<usize, usize>>,
+    pub local_geometry: Option<GeometryData>,
 }
 
 #[derive(Component, Default)]
@@ -66,7 +75,7 @@ pub enum ChunkRef {
 }
 
 #[derive(Component, Default)]
-pub struct POV(pub Vec3);
+pub struct POV(pub Vec3, pub f32);
 
 #[derive(Component)]
 pub struct Chunk {
@@ -80,7 +89,9 @@ pub struct NeedsMesh;
 
 #[derive(Component)]
 #[component(storage = "SparseSet")]
-pub struct GeneratingMesh(pub Task<Option<(Vec<usize>, Mesh)>>);
+pub struct GeneratingMesh(
+    pub Task<Option<(Vec<usize>, GeometryData, BTreeMap<usize, usize>, Mesh)>>,
+);
 
 #[derive(Component, Default)]
 #[component(storage = "SparseSet")]
@@ -125,15 +136,18 @@ fn calculate_povs(
         return;
     };
 
-    if pov.0.distance_squared(camera_transform.translation) < 0.0001 {
-        return;
-    }
-
     let Projection::Perspective(persp) = projection else {
         return;
     };
 
+    if pov.0.distance_squared(camera_transform.translation) < 0.0001
+        && (pov.1 - persp.fov).abs() < 0.0001
+    {
+        return;
+    }
+
     pov.0 = camera_transform.translation;
+    pov.1 = persp.fov;
 
     for (body_entity, body, mut chunk_refs, transform) in body_query.iter_mut() {
         let cell_count = body.geometry.cells.len();
@@ -240,7 +254,7 @@ fn calculate_povs(
     }
 }
 
-fn despawn_chunks(
+pub(crate) fn despawn_chunks(
     mut commands: Commands,
     chunk_query: Query<(Entity, &Chunk, &AwaitingDeletion)>,
     has_mesh: Query<Option<&Mesh3d>>,
@@ -319,9 +333,13 @@ fn generate_meshes(
                 return None;
             };
 
-            let mut local_geometry = geometry.sub_geometry(&cells);
+            let (mut local_geometry, mut cell_map) = geometry.sub_geometry(&cells);
             if local_geometry.cells.len() > 256 {
                 local_geometry = local_geometry.simplify();
+                for v in cell_map.values_mut() {
+                    // all original cells point into the ONE simple cell
+                    *v = 0;
+                }
             } else {
                 local_geometry = local_geometry.duplicate();
             }
@@ -331,7 +349,7 @@ fn generate_meshes(
                 vec![[1.0, 0.0, 0.0, 1.0]; local_geometry.vertices.len()],
             );
 
-            Some((cells, mesh))
+            Some((cells, local_geometry, cell_map, mesh))
         });
 
         commands
@@ -352,19 +370,26 @@ fn poll_mesh_tasks(
         if !gen_mesh.0.is_finished() {
             continue;
         }
-        if let Some(Some((cells, mesh))) = block_on(future::poll_once(&mut gen_mesh.0)) {
+        if let Some(Some((cells, local_geometry, cells_to_local, mesh))) =
+            block_on(future::poll_once(&mut gen_mesh.0))
+        {
             let index = chunk.index.clone();
             if let Ok(mut storage) = body_query.get_mut(chunk.body) {
                 let entry = storage.0.entry(index).or_default();
                 entry.cells = Some(cells);
                 entry.mesh_handle = Some(meshes.add(mesh));
+                commands.entity(chunk_entity).insert(ChunkCells {
+                    cells: entry.cells.clone().map(|i| i.into_iter().collect()),
+                    cells_to_local: Some(cells_to_local),
+                    local_geometry: Some(local_geometry),
+                });
             }
         }
         commands.entity(chunk_entity).remove::<GeneratingMesh>();
     }
 }
 
-fn spawn_ready_chunks(
+pub fn spawn_ready_chunks(
     mut commands: Commands,
     mut body_query: Query<&mut ChunkStorage>,
     chunk_query: Query<(Entity, &Chunk), (With<NeedsMesh>, Without<GeneratingMesh>)>,
@@ -387,6 +412,7 @@ fn spawn_ready_chunks(
                         MeshMaterial3d(material.0.clone()),
                         Transform::from_scale(Vec3::splat(32.0)),
                         Wireframeable,
+                        NeedsColoring,
                     ))
                     .remove::<NeedsMesh>();
                 });
@@ -409,6 +435,10 @@ fn setup_bodies(
     let body = Body::new(geom);
 
     commands.spawn((
+        HexColors {
+            colors: vec![Color::srgba(1.0, 0.0, 0.0, 1.0); body.geometry.cells.len()],
+            ..Default::default()
+        },
         body,
         ChunkStorage::default(),
         ChunkRefs::default(),

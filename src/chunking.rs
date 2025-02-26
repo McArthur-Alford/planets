@@ -102,7 +102,7 @@ impl ChunkManager {
                     // 1) get which cells belong to that chunk
                     if let Some(cells) = octree.get_cells_for_index(&index) {
                         // 2) build geometry data
-                        let local_geometry = geometry.sub_geometry(&cells);
+                        let (local_geometry, cell_map) = geometry.sub_geometry(&cells);
 
                         // 3) send back
                         let _ = response_sender.send(ChunkResponse {

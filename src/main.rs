@@ -3,6 +3,7 @@ mod chunk_manager;
 mod chunk_storage;
 mod chunk_tree;
 mod chunking;
+mod colors;
 mod fibonacci_sphere;
 mod fibonacci_sphere_visualiser;
 mod flatnormal;
@@ -23,8 +24,9 @@ use bevy_fps_counter::FpsCounterPlugin;
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use camera::CameraPlugin;
-use chunk_storage::ChunkingPlugin;
+use chunk_storage::{despawn_chunks, spawn_ready_chunks, ChunkingPlugin};
 use chunking::ChunkManagerDemoPlugin;
+use colors::{randomize_colors, update_mesh_colors};
 use flatnormal::FlatNormalMaterialPlugin;
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
@@ -67,6 +69,8 @@ fn main() {
         // .add_systems(Startup, setup_demo_sphere)
         .add_systems(Update, toggle_wireframe)
         .add_systems(FixedUpdate, spin_light)
+        .add_systems(FixedUpdate, randomize_colors)
+        .add_systems(FixedUpdate, update_mesh_colors.after(despawn_chunks))
         .run();
 }
 

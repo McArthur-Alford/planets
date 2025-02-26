@@ -38,7 +38,7 @@ pub(crate) fn setup_camera(mut commands: Commands) {
         Camera3d::default(),
         Transform::from_xyz(0.0, 0.0, 1.0),
         GameCamera,
-        POV(Vec3::ZERO),
+        POV(Vec3::ZERO, 0.0),
     ));
 }
 

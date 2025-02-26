@@ -339,7 +339,8 @@ impl GeometryData {
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.flat_normals())
     }
 
-    pub(crate) fn sub_geometry(&self, cells: &[usize]) -> Self {
+    /// Returns the new geometry, and a mapping from old cells to new cells
+    pub(crate) fn sub_geometry(&self, cells: &[usize]) -> (Self, BTreeMap<usize, usize>) {
         let mut chunk_vertices = Vec::new();
         let mut chunk_faces = Vec::new();
         let mut chunk_cells = Vec::new();
@@ -378,13 +379,16 @@ impl GeometryData {
             }
         }
 
-        GeometryData {
-            vertices: chunk_vertices,
-            faces: chunk_faces,
-            cells: chunk_cells,
-            cell_neighbors: chunk_cell_neighbors,
-            cell_normals: chunk_cell_normals,
-        }
+        (
+            GeometryData {
+                vertices: chunk_vertices,
+                faces: chunk_faces,
+                cells: chunk_cells,
+                cell_neighbors: chunk_cell_neighbors,
+                cell_normals: chunk_cell_normals,
+            },
+            cell_map,
+        )
     }
 
     pub(crate) fn create_octree(&self) -> Octree {
